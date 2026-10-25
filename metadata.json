@@ -1,0 +1,6 @@
+{
+  "name": "فراپِی (FaraPay ERP) — سامانه جامع حسابداری و برنامه‌ریزی منابع سازمانی",
+  "description": "نرم‌افزار جامع حسابداری دوبل، صندوق فروشگاهی (POS)، انبارداری پیشرفته (WMS)، ارتباط با مشتری (CRM)، فروشگاه آنلاین و موتور اتوماسیون سازمانی بر پایه معماری Odoo و ERPNext.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

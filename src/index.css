@@ -1,0 +1,89 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Vazirmatn', system-ui, -apple-system, sans-serif;
+  --font-mono: 'Vazirmatn', system-ui, -apple-system, sans-serif;
+}
+
+@layer base {
+  *, *::before, *::after {
+    letter-spacing: 0 !important;
+  }
+
+  html {
+    font-family: 'Vazirmatn', system-ui, -apple-system, sans-serif;
+    direction: rtl;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body, button, input, select, textarea {
+    font-family: 'Vazirmatn', system-ui, -apple-system, sans-serif;
+    direction: rtl;
+    line-height: 1.7;
+  }
+
+  body {
+    background-color: #f8fafc;
+    color: #0f172a;
+    font-size: 14px;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    line-height: 1.5;
+    font-weight: 700;
+    color: #0f172a;
+  }
+
+  p {
+    line-height: 1.8;
+  }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+  }
+
+  th {
+    padding: 0.75rem 0.875rem !important;
+    font-weight: 600 !important;
+    line-height: 1.5 !important;
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+
+  td {
+    padding: 0.75rem 0.875rem !important;
+    line-height: 1.65 !important;
+    vertical-align: middle;
+  }
+}
+
+.text-xs {
+  font-size: 0.8125rem !important; /* 13px for crisp Persian legibility */
+  line-height: 1.65 !important;
+}
+
+.text-\[11px\] {
+  font-size: 0.75rem !important; /* 12px minimum */
+  line-height: 1.6 !important;
+}
+
+.font-mono, .tabular-nums {
+  font-family: 'Vazirmatn', system-ui, -apple-system, sans-serif !important;
+  font-variant-numeric: tabular-nums;
+}
+
+.code-badge {
+  direction: ltr;
+  unicode-bidi: isolate;
+  display: inline-block;
+  font-variant-numeric: tabular-nums;
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+}
