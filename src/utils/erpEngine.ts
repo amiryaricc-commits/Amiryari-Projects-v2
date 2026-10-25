@@ -1126,3 +1126,254 @@ export function restoreStockWithBundles<
     return restoredQty > 0 ? { ...item, stockQty: item.stockQty + restoredQty } : item;
   });
 }
+
+// ============================================================================
+// MODULE 4 & 13: THREE-BUCKET SHAREHOLDER ENGINE (50/50 CAPITAL & 70/30 PROFIT)
+// ============================================================================
+export interface ThreeBucketPartnerInput {
+  id: string;
+  name: string;
+  capitalSharePercent: number; // C_i e.g. 50
+  profitSharePercent: number; // P_i e.g. 70 or 30
+  personalCapitalInjected: number;
+  withdrawals: number;
+  frozenSnapshotBalance?: number;
+}
+
+export interface ThreeBucketCalculationResult {
+  netProfit: number;
+  bucket1InitialInventoryCapital: number;
+  bucket1RecoveredCogs: number;
+  bucket1UsedForPurchases: number;
+  bucket1CurrentBalance: number;
+  totalNewCapitalNeeded: number;
+  partners: {
+    id: string;
+    name: string;
+    capitalSharePercent: number;
+    profitSharePercent: number;
+    profitAllocated: number;
+    personalCapitalInjected: number;
+    capitalExpansionCharge: number;
+    withdrawals: number;
+    walletBalance: number; // W_i
+    isNegativeDeficit: boolean;
+  }[];
+}
+
+export function calculateThreeBucketShareholderState(params: {
+  initialInventoryCapital: number;
+  totalRevenue: number;
+  totalCogs: number;
+  totalOperatingExpenses: number;
+  totalNewPurchasesAmount: number;
+  partners: ThreeBucketPartnerInput[];
+}): ThreeBucketCalculationResult {
+  const netProfit = params.totalRevenue - params.totalCogs - params.totalOperatingExpenses;
+  // Bucket 1 (Capital Recovery Pool) receives COGS from every sale so inventory capital is preserved
+  const availableRecoveryPool = Math.max(0, params.totalCogs);
+  const bucket1UsedForPurchases = Math.min(availableRecoveryPool, Math.max(0, params.totalNewPurchasesAmount));
+  const bucket1CurrentBalance = Math.max(0, availableRecoveryPool - bucket1UsedForPurchases);
+  // Any purchase exceeding Bucket 1 is new inventory expansion capital funded 50/50 (C_i)
+  const totalNewCapitalNeeded = Math.max(0, params.totalNewPurchasesAmount - availableRecoveryPool);
+
+  const partners = params.partners.map((partner) => {
+    const ci = partner.capitalSharePercent / 100;
+    const pi = partner.profitSharePercent / 100;
+    const profitAllocated = Math.round(netProfit * pi);
+    const capitalExpansionCharge = Math.round(totalNewCapitalNeeded * ci);
+    const frozenBase = partner.frozenSnapshotBalance || 0;
+    // W_i = (Net Profit * P_i) + (Personal Capital Injected_i - Total New Capital Needed * C_i) - Withdrawals_i
+    const walletBalance =
+      frozenBase +
+      profitAllocated +
+      (partner.personalCapitalInjected - capitalExpansionCharge) -
+      partner.withdrawals;
+
+    return {
+      id: partner.id,
+      name: partner.name,
+      capitalSharePercent: partner.capitalSharePercent,
+      profitSharePercent: partner.profitSharePercent,
+      profitAllocated,
+      personalCapitalInjected: partner.personalCapitalInjected,
+      capitalExpansionCharge,
+      withdrawals: partner.withdrawals,
+      walletBalance,
+      isNegativeDeficit: walletBalance < 0,
+    };
+  });
+
+  return {
+    netProfit,
+    bucket1InitialInventoryCapital: params.initialInventoryCapital,
+    bucket1RecoveredCogs: params.totalCogs,
+    bucket1UsedForPurchases,
+    bucket1CurrentBalance,
+    totalNewCapitalNeeded,
+    partners,
+  };
+}
+
+// ============================================================================
+// MODULE 8 & 14: DECANT (ML) E-LIQUID SALE ENGINE
+// ============================================================================
+export function calculateCostPerMl(bottlePurchasePrice: number, bottleVolumeMl: number): number {
+  if (!Number.isFinite(bottleVolumeMl) || bottleVolumeMl <= 0) return 0;
+  return Math.round(Math.max(0, bottlePurchasePrice) / bottleVolumeMl);
+}
+
+export function deductDecantMlFromBottle(params: {
+  stockBottles: number;
+  bottleVolumeMl: number;
+  openBottleRemainingMl: number;
+  bottleValuationRate: number;
+  soldMl: number;
+}): {
+  success: boolean;
+  errorMessage?: string;
+  newStockBottles: number;
+  newOpenBottleRemainingMl: number;
+  costPerMl: number;
+  lineCogs: number;
+} {
+  const { stockBottles, bottleVolumeMl, openBottleRemainingMl, bottleValuationRate, soldMl } = params;
+  if (bottleVolumeMl <= 0 || soldMl <= 0) {
+    return {
+      success: false,
+      errorMessage: 'حجم بطری و مقدار میلی‌لیتر فروش باید بزرگتر از صفر باشد.',
+      newStockBottles: stockBottles,
+      newOpenBottleRemainingMl: openBottleRemainingMl,
+      costPerMl: 0,
+      lineCogs: 0,
+    };
+  }
+  const totalAvailableMl = stockBottles * bottleVolumeMl + openBottleRemainingMl;
+  if (soldMl > totalAvailableMl) {
+    return {
+      success: false,
+      errorMessage: `موجودی میلی‌لیتری کافی نیست (موجود کل: ${totalAvailableMl} ml، درخواستی: ${soldMl} ml).`,
+      newStockBottles: stockBottles,
+      newOpenBottleRemainingMl: openBottleRemainingMl,
+      costPerMl: 0,
+      lineCogs: 0,
+    };
+  }
+
+  let currentBottles = stockBottles;
+  let currentOpenMl = openBottleRemainingMl;
+
+  while (currentOpenMl < soldMl && currentBottles > 0) {
+    currentBottles -= 1;
+    currentOpenMl += bottleVolumeMl;
+  }
+
+  currentOpenMl = Math.max(0, Number((currentOpenMl - soldMl).toFixed(2)));
+  const costPerMl = calculateCostPerMl(bottleValuationRate, bottleVolumeMl);
+  const lineCogs = Math.round(soldMl * costPerMl);
+
+  return {
+    success: true,
+    newStockBottles: currentBottles,
+    newOpenBottleRemainingMl: currentOpenMl,
+    costPerMl,
+    lineCogs,
+  };
+}
+
+// ============================================================================
+// MODULE 8: SECTOR-BASED VALUATION (MWA FOR VAPE vs FIFO FOR COMPUTER PARTS)
+// ============================================================================
+export function consumeFifoLayers(
+  layers: { qty: number; unitCost: number; date: string }[],
+  soldQty: number,
+  fallbackUnitCost: number
+): {
+  remainingLayers: { qty: number; unitCost: number; date: string }[];
+  totalCogs: number;
+  nextValuationRate: number;
+} {
+  if (!layers || layers.length === 0) {
+    return {
+      remainingLayers: [],
+      totalCogs: Math.round(soldQty * fallbackUnitCost),
+      nextValuationRate: fallbackUnitCost,
+    };
+  }
+
+  let needed = soldQty;
+  let totalCogs = 0;
+  const remainingLayers: { qty: number; unitCost: number; date: string }[] = [];
+
+  for (const layer of layers) {
+    if (needed <= 0) {
+      remainingLayers.push({ ...layer });
+      continue;
+    }
+    const take = Math.min(layer.qty, needed);
+    totalCogs += take * layer.unitCost;
+    needed -= take;
+    const left = layer.qty - take;
+    if (left > 0) {
+      remainingLayers.push({ ...layer, qty: left });
+    }
+  }
+
+  if (needed > 0) {
+    totalCogs += needed * fallbackUnitCost;
+  }
+
+  const nextValuationRate =
+    remainingLayers.length > 0 ? remainingLayers[0].unitCost : fallbackUnitCost;
+
+  return {
+    remainingLayers,
+    totalCogs: Math.round(totalCogs),
+    nextValuationRate,
+  };
+}
+
+// ============================================================================
+// MODULE 5: SMART CASE-INSENSITIVE SEARCH (EQUAL RANKED FIRST + CONTAINS)
+// ============================================================================
+export function smartFilterAndRankItems<
+  T extends {
+    sku: string;
+    name: string;
+    brand?: string;
+    flavor?: string;
+    parentTag?: string;
+    nicotine?: string;
+  }
+>(items: T[], rawQuery: string): T[] {
+  const q = rawQuery.trim().toLowerCase();
+  if (!q) return items;
+
+  const exactMatches: T[] = [];
+  const containsMatches: T[] = [];
+
+  for (const item of items) {
+    const skuLower = (item.sku || '').toLowerCase();
+    const nameLower = (item.name || '').toLowerCase();
+    const brandLower = (item.brand || '').toLowerCase();
+    const flavorLower = (item.flavor || '').toLowerCase();
+    const tagLower = (item.parentTag || '').toLowerCase();
+    const nicLower = (item.nicotine || '').toLowerCase();
+
+    if (skuLower === q || nameLower === q || tagLower === q) {
+      exactMatches.push(item);
+    } else if (
+      skuLower.includes(q) ||
+      nameLower.includes(q) ||
+      brandLower.includes(q) ||
+      flavorLower.includes(q) ||
+      tagLower.includes(q) ||
+      nicLower.includes(q)
+    ) {
+      containsMatches.push(item);
+    }
+  }
+
+  return [...exactMatches, ...containsMatches];
+}
+

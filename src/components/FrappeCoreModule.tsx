@@ -18,6 +18,10 @@ import {
 
 interface FrappeCoreModuleProps {
   auditLogs: AuditLogRecord[];
+  branches?: string[];
+  activeBranch?: string;
+  onAddBranch?: (branchName: string) => void;
+  onSelectBranch?: (branchName: string) => void;
   onExportFullData: () => void;
   onShowToast: (msg: string) => void;
   onImportHesabfaData: (payload: HesabfaImportPayload) => void;
@@ -25,6 +29,10 @@ interface FrappeCoreModuleProps {
 
 export const FrappeCoreModule: React.FC<FrappeCoreModuleProps> = ({
   auditLogs,
+  branches = ['فروشگاه مرکزی کلودی شاپ'],
+  activeBranch = 'فروشگاه مرکزی کلودی شاپ',
+  onAddBranch,
+  onSelectBranch,
   onExportFullData,
   onShowToast,
   onImportHesabfaData,
@@ -33,12 +41,15 @@ export const FrappeCoreModule: React.FC<FrappeCoreModuleProps> = ({
     'print_notify' | 'report_dashboard' | 'import_export' | 'permissions_audit' | 'scripts_api'
   >('print_notify');
 
+  const [newBranchName, setNewBranchName] = useState('');
+  const [showAddBranchForm, setShowAddBranchForm] = useState(false);
+
   // Role Permission Preview State
   const [previewRole, setPreviewRole] = useState<'مدیر کل سامانه' | 'صندوقدار فروشگاه'>(
     'مدیر کل سامانه'
   );
-  const [branchRestriction, setBranchRestriction] = useState<'همه شعب' | 'فقط شعبه الهیه'>(
-    'همه شعب'
+  const [branchRestriction, setBranchRestriction] = useState<string>(
+    'فروشگاه مرکزی کلودی شاپ'
   );
 
   // Dynamic Report Builder State
@@ -93,20 +104,87 @@ export const FrappeCoreModule: React.FC<FrappeCoreModuleProps> = ({
       <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 bg-white p-6 rounded-xl border border-slate-200">
         <div className="space-y-1">
           <h2 className="text-lg font-bold text-slate-900">
-            تنظیمات و امکانات هسته سیستم
+            تنظیمات هسته سیستم و مدیریت شعبه
           </h2>
           <p className="text-sm text-slate-500">
-            اعلان‌های خودکار، قالب چاپ، گزارش‌ساز پویا، ورود و خروج اکسل، دسترسی‌ها و وب‌هوک
+            مدیریت تک‌شعبه‌ای پیش‌فرض ({activeBranch})، اعلان‌های خودکار، قالب چاپ، گزارش‌ساز پویا و پشتیبان‌گیری
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onExportFullData}
-          className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 whitespace-nowrap shrink-0"
-        >
-          <Download className="w-4 h-4 shrink-0" />
-          <span>خروجی کامل پایگاه داده</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowAddBranchForm((prev) => !prev)}
+            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg hover:bg-indigo-100 whitespace-nowrap shrink-0"
+          >
+            <span>+ افزودن شعبه جدید</span>
+          </button>
+          <button
+            type="button"
+            onClick={onExportFullData}
+            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 whitespace-nowrap shrink-0"
+          >
+            <Download className="w-4 h-4 shrink-0" />
+            <span>خروجی کامل پایگاه داده</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Single-Branch Default & Add New Branch Panel */}
+      <div className="bg-white p-5 rounded-xl border border-slate-200 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-black text-slate-900">
+              وضعیت شعبه‌های فعال سیستم (پیش‌فرض: تک‌شعبه‌ای)
+            </h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              تمام شعبه‌های آزمایشی قبلی حذف شده‌اند و سیستم به صورت پیش‌فرض روی «{activeBranch}» تنظیم است.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {branches.map((b) => (
+              <button
+                key={b}
+                type="button"
+                onClick={() => onSelectBranch && onSelectBranch(b)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${
+                  b === activeBranch
+                    ? 'bg-emerald-600 text-white border-emerald-600'
+                    : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                }`}
+              >
+                {b === activeBranch ? `✓ ${b} (فعال)` : b}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {showAddBranchForm && (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!newBranchName.trim()) return;
+              if (onAddBranch) onAddBranch(newBranchName.trim());
+              setNewBranchName('');
+              setShowAddBranchForm(false);
+            }}
+            className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-wrap items-center gap-2.5 text-xs"
+          >
+            <input
+              type="text"
+              required
+              value={newBranchName}
+              onChange={(e) => setNewBranchName(e.target.value)}
+              placeholder="نام شعبه جدید (مثلاً: شعبه دوم رشتیه)..."
+              className="flex-1 min-w-[220px] rounded-lg border border-slate-300 px-3 py-2 bg-white"
+            />
+            <button
+              type="submit"
+              className="px-4 py-2 rounded-lg bg-slate-900 text-white font-bold hover:bg-slate-800"
+            >
+              ثبت شعبه جدید
+            </button>
+          </form>
+        )}
       </div>
 
       {/* Sub-tabs */}
@@ -146,11 +224,11 @@ export const FrappeCoreModule: React.FC<FrappeCoreModuleProps> = ({
                 سیستم اعلان‌های خودکار (پیامک، ایمیل و اعلان داخلی)
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                ارسال خودکار هشدار بر اساس رویدادها (رسیدن چک به سررسید، کمبود موجودی انبار یا ثبت فاکتور جدید)
+                ارسال خودکار هشدار بر اساس رویدادها (رسیدن سررسید تسویه تأمین‌کننده، کمبود موجودی انبار یا ثبت فاکتور جدید)
               </p>
             </div>
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
-              هنوز قانون اعلان واقعی پیکربندی نشده است.
+              قوانین یادآور به تقویم عملیاتی متصل هستند.
             </div>
           </div>
 
@@ -160,17 +238,17 @@ export const FrappeCoreModule: React.FC<FrappeCoreModuleProps> = ({
                 طراح فرمت چاپ اسناد و فاکتورها
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                شخصی‌سازی ظاهر فاکتورها، رسیدها و اسناد چاپی با چیدمان دلخواه، لوگو و مهر شرکت
+                شخصی‌سازی ظاهر فاکتورها، رسیدها و اسناد چاپی با چیدمان دلخواه، لوگو و مهر فروشگاه
               </p>
             </div>
             <div className="space-y-3 text-xs">
               {[
                 {
-                  name: 'قالب فاکتور فروش رسمی شرکتی (افقی همراه با لوگو و مهر دیجیتال)',
+                  name: 'قالب فاکتور فروش رسمی فروشگاهی (افقی همراه با لوگو و مهر دیجیتال)',
                   target: 'فاکتور فروش',
                 },
                 {
-                  name: 'فیش حرارتی ۸ سانتی‌متری صندوق فروشگاهی (همراه با بارکد و امتیاز باشگاه)',
+                  name: 'فیش حرارتی ۸ سانتی‌متری صندوق فروشگاهی (POS)',
                   target: 'فیش صندوق فروشگاهی',
                 },
                 {
@@ -264,7 +342,7 @@ export const FrappeCoreModule: React.FC<FrappeCoreModuleProps> = ({
           </div>
 
           <p className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
-            برای نمایش شاخص‌های مالی، داده معتبر این گزارش هنوز ثبت نشده است.
+            برای مشاهده نمودارهای تحلیلی کامل ماهیانه، به بخش «آنالیز و آمار» در منوی سمت راست مراجعه کنید.
           </p>
         </div>
       )}
@@ -363,7 +441,7 @@ export const FrappeCoreModule: React.FC<FrappeCoreModuleProps> = ({
                   استخراج یکپارچه کل اطلاعات سال مالی ۱۴۰۴
                 </div>
                 <p className="text-slate-600">
-                  شامل درخت حساب‌ها، آرتیکل‌های دفتر کل، فاکتورهای فروش و خرید، موجودی و سریال‌های انبار و لیست مشتریان
+                  شامل درخت حساب‌ها، ردیف‌های سند دفتر کل، فاکتورهای فروش و خرید، موجودی چهار انبار و لیست مخاطبین
                 </p>
                 <button
                   type="button"
@@ -388,7 +466,7 @@ export const FrappeCoreModule: React.FC<FrappeCoreModuleProps> = ({
                   مدیریت دسترسی‌های دقیق در سطح نقش، شعبه و فیلد
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  محدود کردن دسترسی کاربران به یک شعبه یا انبار خاص و مخفی‌سازی فیلدهای حساس (قیمت خرید و سود خالص)
+                  محدود کردن دسترسی کاربران به شعبه فعال و مخفی‌سازی فیلدهای حساس (قیمت خرید و سود خالص)
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -409,17 +487,20 @@ export const FrappeCoreModule: React.FC<FrappeCoreModuleProps> = ({
                 <select
                   aria-label="محدودیت دسترسی شعبه"
                   value={branchRestriction}
-                  onChange={(e) => setBranchRestriction(e.target.value as typeof branchRestriction)}
+                  onChange={(e) => setBranchRestriction(e.target.value)}
                   className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg"
                 >
-                  <option value="همه شعب">دسترسی سند: همه شعب سازمان</option>
-                  <option value="فقط شعبه الهیه">محدودیت سند: فقط اسناد شعبه الهیه</option>
+                  {branches.map((b) => (
+                    <option key={b} value={b}>
+                      شعبه: {b}
+                    </option>
+                  ))}
                 </select>
               </div>
             </div>
 
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
-              این نمای پیش‌نمایش تا تعریف داده و مجوزهای واقعی، مقدار مالی نمونه نشان نمی‌دهد.
+              در حالت صندوقدار یا Privacy Mode، قیمت خرید واحد و سود خالص به صورت خودکار با (****) پوشانده می‌شوند.
             </div>
           </div>
 

@@ -23,6 +23,11 @@ import {
   buildSalesInvoiceLedgerLines,
   buildPurchaseInvoiceReversalLines,
   buildCustomerRefundLedgerLines,
+  calculateThreeBucketShareholderState,
+  calculateCostPerMl,
+  deductDecantMlFromBottle,
+  consumeFifoLayers,
+  smartFilterAndRankItems,
 } from './erpEngine';
 import { INITIAL_ACCOUNTS, INITIAL_GL_ENTRIES } from '../data/erpSeedData';
 
@@ -552,3 +557,95 @@ test('restoreStockWithBundles restores bundle and all component quantities', () 
     );
   }
 });
+
+test('calculateThreeBucketShareholderState separates 50/50 capital recovery from 70/30 net profit and flags 30% partner negative deficit on expansion', () => {
+  const res = calculateThreeBucketShareholderState({
+    initialInventoryCapital: 100000000,
+    totalRevenue: 15000000,
+    totalCogs: 10000000,
+    totalOperatingExpenses: 1000000,
+    totalNewPurchasesAmount: 18000000, // 8,000,000 above recovered COGS -> 4,000,000 per partner (50/50)
+    partners: [
+      {
+        id: 'sh-1',
+        name: 'شریک اول',
+        capitalSharePercent: 50,
+        profitSharePercent: 70,
+        personalCapitalInjected: 0,
+        withdrawals: 0,
+      },
+      {
+        id: 'sh-2',
+        name: 'شریک دوم',
+        capitalSharePercent: 50,
+        profitSharePercent: 30,
+        personalCapitalInjected: 0,
+        withdrawals: 0,
+      },
+    ],
+  });
+
+  // Net Profit = 15,000,000 - 10,000,000 - 1,000,000 = 4,000,000
+  assert.equal(res.netProfit, 4000000);
+  // Bucket 1 recovered 10M COGS and used all 10M toward the 18M purchase; 8M new capital needed
+  assert.equal(res.bucket1RecoveredCogs, 10000000);
+  assert.equal(res.bucket1UsedForPurchases, 10000000);
+  assert.equal(res.totalNewCapitalNeeded, 8000000);
+
+  // Partner 1 (70% profit = 2,800,000; 50% expansion charge = 4,000,000 -> -1,200,000)
+  assert.equal(res.partners[0].profitAllocated, 2800000);
+  assert.equal(res.partners[0].capitalExpansionCharge, 4000000);
+  assert.equal(res.partners[0].walletBalance, -1200000);
+
+  // Partner 2 (30% profit = 1,200,000; 50% expansion charge = 4,000,000 -> -2,800,000 negative deficit)
+  assert.equal(res.partners[1].profitAllocated, 1200000);
+  assert.equal(res.partners[1].capitalExpansionCharge, 4000000);
+  assert.equal(res.partners[1].walletBalance, -2800000);
+  assert.equal(res.partners[1].isNegativeDeficit, true);
+});
+
+test('deductDecantMlFromBottle opens a sealed bottle when needed and computes exact per-ml COGS', () => {
+  assert.equal(calculateCostPerMl(600000, 60), 10000);
+
+  const res = deductDecantMlFromBottle({
+    stockBottles: 3,
+    bottleVolumeMl: 60,
+    openBottleRemainingMl: 5,
+    bottleValuationRate: 600000,
+    soldMl: 15,
+  });
+
+  assert.equal(res.success, true);
+  assert.equal(res.newStockBottles, 2); // 1 bottle opened (5 + 60 - 15 = 50 ml left)
+  assert.equal(res.newOpenBottleRemainingMl, 50);
+  assert.equal(res.costPerMl, 10000);
+  assert.equal(res.lineCogs, 150000);
+});
+
+test('consumeFifoLayers consumes oldest purchase layers first for computer parts', () => {
+  const fifo = consumeFifoLayers(
+    [
+      { qty: 2, unitCost: 10000000, date: '۱۴۰۴/۰۷/۰۱' },
+      { qty: 3, unitCost: 12000000, date: '۱۴۰۴/۰۸/۰۱' },
+    ],
+    3,
+    12000000
+  );
+
+  // 2 * 10M + 1 * 12M = 32M
+  assert.equal(fifo.totalCogs, 32000000);
+  assert.equal(fifo.remainingLayers.length, 1);
+  assert.equal(fifo.remainingLayers[0].qty, 2);
+  assert.equal(fifo.nextValuationRate, 12000000);
+});
+
+test('smartFilterAndRankItems ranks case-insensitive exact matches first followed by partial matches', () => {
+  const items = [
+    { sku: 'VGOD-MANGO-25', name: 'سالت ویگاد انبه', brand: 'VGOD' },
+    { sku: 'vgod', name: 'پاد ویگاد', brand: 'VGOD' },
+  ];
+  const ranked = smartFilterAndRankItems(items, 'VGOD');
+  assert.equal(ranked[0].sku, 'vgod');
+  assert.equal(ranked[1].sku, 'VGOD-MANGO-25');
+});
+

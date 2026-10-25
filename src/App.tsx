@@ -1,8 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Home,
   Calculator,
-  ShoppingCart,
   Package,
   Store,
   Users,
@@ -10,10 +9,20 @@ import {
   Settings,
   Search,
   CheckCircle2,
-  Building2,
-  Calendar,
-  ChevronLeft,
+  Calendar as CalendarIcon,
+  BarChart3,
+  Sparkles,
+  Eye,
+  EyeOff,
+  Sun,
+  Moon,
+  Undo2,
+  Redo2,
+  Save,
+  AlertTriangle,
   ArrowUpLeft,
+  ShieldCheck,
+  Truck,
 } from 'lucide-react';
 
 import {
@@ -23,26 +32,40 @@ import {
   INITIAL_PURCHASE_INVOICES,
   INITIAL_JOURNAL_ENTRIES,
   INITIAL_PAYMENT_ENTRIES,
-  INITIAL_CHEQUES,
   INITIAL_COST_CENTERS,
   INITIAL_FIXED_ASSETS,
   INITIAL_SHAREHOLDERS,
   INITIAL_CRM_LEADS,
   INITIAL_AUDIT_LOGS,
+  INITIAL_WAREHOUSES,
+  INITIAL_MASTER_OPTIONS,
+  INITIAL_RECURRING_EXPENSE_TEMPLATES,
+  INITIAL_PROMOTION_RULES,
+  DEFAULT_BRANCH_NAME,
   AccountNode,
   GLEntryRecord,
   SalesInvoiceRecord,
   PurchaseInvoiceRecord,
   JournalEntryRecord,
   PaymentEntryRecord,
-  ChequeRecord,
   CostCenterRecord,
   FixedAssetRecord,
   ShareholderRecord,
+  ShareholderRuleSnapshot,
+  ShareholderDrawingRecord,
+  RecurringExpenseTemplate,
+  MonthlyExpenseLedgerRecord,
   InventoryItemRecord,
   CustomerContactRecord,
+  BulkSmsContactRecord,
   CrmLeadRecord,
   AuditLogRecord,
+  WarehouseRecord,
+  MasterOptionsRegistry,
+  PromotionRuleRecord,
+  OperationalCalendarEvent,
+  CustomerWishlistRecord,
+  WarehouseKey,
 } from './data/erpSeedData';
 import { CLOUDY_SHOP_CONTACTS, CLOUDY_SHOP_INVENTORY } from './data/cloudyShopData';
 
@@ -51,24 +74,25 @@ import {
   formatCurrency,
   formatPersianDate,
   getPersianYear,
-  formatRoleName,
-  calculateSalesDashboardMetrics,
   postDoubleEntryToAccounts,
   deductStockWithBundles,
-  aggregateInvoiceLines,
-  validateSettlementAmount,
   restoreStockWithBundles,
   calculateMovingAverageValuation,
-  validateJournalEntry,
-  buildSalesInvoiceLedgerLines,
-  buildPurchaseInvoiceReversalLines,
-  buildCustomerRefundLedgerLines,
+  deductDecantMlFromBottle,
+  consumeFifoLayers,
+  calculateThreeBucketShareholderState,
 } from './utils/erpEngine';
 
 import { AccountingModule, AccountingSubTab } from './components/AccountingModule';
-import { SellingPosModule } from './components/SellingPosModule';
+import {
+  SellingPosModule,
+  PosCheckoutPayload,
+  PosReturnPayload,
+} from './components/SellingPosModule';
 import { CrmMarketingModule } from './components/CrmMarketingModule';
 import { InventoryWmsModule } from './components/InventoryWmsModule';
+import { AnalyticsBiModule } from './components/AnalyticsBiModule';
+import { OperationalCalendarModule } from './components/OperationalCalendarModule';
 import { SupportWebshopModule } from './components/SupportWebshopModule';
 import { FrappeCoreModule } from './components/FrappeCoreModule';
 import { usePersistentArrayState } from './hooks/usePersistentArrayState';
@@ -79,2032 +103,1027 @@ import {
 
 type WorkspaceId =
   | 'home'
-  | 'accounting'
-  | 'selling'
-  | 'stock'
   | 'pos'
+  | 'stock'
+  | 'festivals'
+  | 'accounting'
+  | 'analytics'
   | 'crm'
+  | 'calendar'
   | 'webshop'
   | 'settings';
 
-const fiscalYearOptions = (() => {
-  const persianDigits = '۰۱۲۳۴۵۶۷۸۹';
-  const currentYear = Number(
-    getPersianYear().replace(/[۰-۹]/g, (digit) => String(persianDigits.indexOf(digit)))
-  );
-  return Array.from({ length: 3 }, (_, index) =>
-    new Intl.NumberFormat('fa-IR', { useGrouping: false }).format(currentYear - index)
-  );
-})();
-
-const getPostableAccountCodes = (accounts: AccountNode[]) =>
-  new Set(
-    accounts
-      .filter(
-        (account) =>
-          account.level !== 'گروه' &&
-          !accounts.some((candidate) => candidate.parentCode === account.code)
-      )
-      .map((account) => account.code)
-  );
+interface SystemBackupSnapshot {
+  id: string;
+  timestamp: string;
+  label: string;
+  accounts: AccountNode[];
+  glEntries: GLEntryRecord[];
+  journalEntries: JournalEntryRecord[];
+  salesInvoices: SalesInvoiceRecord[];
+  purchaseInvoices: PurchaseInvoiceRecord[];
+  inventoryItems: InventoryItemRecord[];
+  customerContacts: CustomerContactRecord[];
+  shareholders: ShareholderRecord[];
+}
 
 const PRODUCTION_MODE_KEY = 'farapay.v1.production-mode';
-const CLOUDY_SHOP_IMPORT_KEY = 'farapay.v3.cloudy-shop-import';
+const CLOUDY_SHOP_V4_KEY = 'farapay.v4.cloudy-shop-4wh-init';
+
+// Normalize Cloudy Shop inventory into Central External warehouse by default
+const normalizeCloudyShopInventory = (
+  items: InventoryItemRecord[]
+): InventoryItemRecord[] =>
+  items.map((item) => {
+    const isPc =
+      item.category === 'قطعات کامپیوتر و سخت‌افزار' ||
+      item.name.toLowerCase().includes('rtx') ||
+      item.name.toLowerCase().includes('ssd');
+    const existingWh = item.warehouseStock;
+    const hasWhSum =
+      existingWh &&
+      Object.values(existingWh).reduce((acc, v) => acc + (Number(v) || 0), 0) > 0;
+    return {
+      ...item,
+      sector: item.sector || (isPc ? 'pc' : 'vape'),
+      condition: item.condition || 'آکبند',
+      warehouseStock: hasWhSum
+        ? existingWh
+        : {
+            central_external: item.stockQty,
+            vitrine: 0,
+            shop_storage: 0,
+            consignment: 0,
+          },
+      totalInQty: item.totalInQty ?? item.stockQty,
+      totalOutQty: item.totalOutQty ?? 0,
+      resellerPrice: item.resellerPrice ?? item.partnerPrice ?? item.wholesalePrice,
+    };
+  });
 
 export function App() {
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>('home');
-  const [accountingInitialTab, setAccountingInitialTab] = useState<AccountingSubTab>('coa');
-  const [activeRole, setActiveRole] = useState<SystemRole>('ادمین کل (Super Admin)');
-  const [activeFiscalYear, setActiveFiscalYear] = useState(() => `سال مالی ${getPersianYear()}`);
-  const [defaultBranch, setDefaultBranch] = useState('همه شعب سازمان');
+  const [accountingInitialTab, setAccountingInitialTab] =
+    useState<AccountingSubTab>('coa');
+  const [inventoryInitialTab, setInventoryInitialTab] = useState<
+    'stocktaking' | 'sku_allocation' | 'festivals_bundles'
+  >('stocktaking');
+
+  const [activeRole] = useState<SystemRole>('ادمین کل (Super Admin)');
+  const [activeFiscalYear] = useState(() => `سال مالی ${getPersianYear()}`);
+  const [branches, setBranches] = useState<string[]>([DEFAULT_BRANCH_NAME]);
+  const [defaultBranch, setDefaultBranch] = useState<string>(DEFAULT_BRANCH_NAME);
   const [productionMode, setProductionMode] = useState(
     () => window.localStorage.getItem(PRODUCTION_MODE_KEY) === 'true'
   );
-  const productionInitialValue = <T,>(value: T[]): T[] => (productionMode ? [] : value);
+
+  // Theme & Auto-Hide Privacy Mode (60s inactivity timer)
+  const [darkMode, setDarkMode] = useState(false);
+  const [privacyMask, setPrivacyMask] = useState(true); // Masked (****) by default
+
+  useEffect(() => {
+    if (privacyMask) return;
+    let timeoutId: number;
+    const resetTimer = () => {
+      window.clearTimeout(timeoutId);
+      timeoutId = window.setTimeout(() => {
+        setPrivacyMask(true);
+      }, 60000); // 60 seconds auto-hide
+    };
+    resetTimer();
+    window.addEventListener('mousemove', resetTimer);
+    window.addEventListener('keydown', resetTimer);
+    window.addEventListener('click', resetTimer);
+    return () => {
+      window.clearTimeout(timeoutId);
+      window.removeEventListener('mousemove', resetTimer);
+      window.removeEventListener('keydown', resetTimer);
+      window.removeEventListener('click', resetTimer);
+    };
+  }, [privacyMask]);
 
   // Global Command Bar (Ctrl+K)
   const [showAwesomebar, setShowAwesomebar] = useState(false);
   const [awesomeQuery, setAwesomeQuery] = useState('');
 
-  // Central Double-Entry & Perpetual Inventory State
-  const [accounts, setAccounts, accountsStorageError, recoverAccounts] = usePersistentArrayState<AccountNode>(
-    'farapay.v1.accounts',
-    productionMode
-      ? INITIAL_ACCOUNTS.map((account) => ({ ...account, openingBalance: 0, balance: 0 }))
-      : INITIAL_ACCOUNTS
+  // Central Persistent States
+  const [accounts, setAccounts] = usePersistentArrayState<AccountNode>(
+    'farapay.v4.accounts',
+    INITIAL_ACCOUNTS
   );
-  const [glEntries, setGlEntries, glStorageError, recoverGl] = usePersistentArrayState<GLEntryRecord>('farapay.v1.gl-entries', productionInitialValue(INITIAL_GL_ENTRIES));
-  const [journalEntries, setJournalEntries, journalStorageError, recoverJournal] = usePersistentArrayState<JournalEntryRecord>(
-    'farapay.v1.journal-entries',
-    productionInitialValue(INITIAL_JOURNAL_ENTRIES)
+  const [glEntries, setGlEntries] = usePersistentArrayState<GLEntryRecord>(
+    'farapay.v1.gl-entries',
+    INITIAL_GL_ENTRIES
   );
-  const [salesInvoices, setSalesInvoices, salesStorageError, recoverSales] = usePersistentArrayState<SalesInvoiceRecord>(
-    'farapay.v1.sales-invoices',
-    productionInitialValue(INITIAL_SALES_INVOICES)
-  );
-  const [purchaseInvoices, setPurchaseInvoices, purchaseStorageError, recoverPurchases] = usePersistentArrayState<PurchaseInvoiceRecord>(
-    'farapay.v1.purchase-invoices',
-    productionInitialValue(INITIAL_PURCHASE_INVOICES)
-  );
-  const [paymentEntries, setPaymentEntries, paymentStorageError, recoverPayments] = usePersistentArrayState<PaymentEntryRecord>(
-    'farapay.v1.payment-entries',
-    productionInitialValue(INITIAL_PAYMENT_ENTRIES)
-  );
-  const [cheques, setCheques, chequeStorageError, recoverCheques] = usePersistentArrayState<ChequeRecord>(
-    'farapay.v1.cheques',
-    productionInitialValue(INITIAL_CHEQUES)
-  );
-  const [costCenters, setCostCenters, costCenterStorageError, recoverCostCenters] = usePersistentArrayState<CostCenterRecord>(
-    'farapay.v1.cost-centers',
-    productionInitialValue(INITIAL_COST_CENTERS)
-  );
-  const [fixedAssets, setFixedAssets, fixedAssetStorageError, recoverFixedAssets] = usePersistentArrayState<FixedAssetRecord>(
-    'farapay.v1.fixed-assets',
-    productionInitialValue(INITIAL_FIXED_ASSETS)
-  );
-  const [shareholders, setShareholders, shareholderStorageError, recoverShareholders] = usePersistentArrayState<ShareholderRecord>(
-    'farapay.v1.shareholders',
-    productionInitialValue(INITIAL_SHAREHOLDERS)
-  );
-  const [inventoryItems, setInventoryItems, inventoryStorageError, recoverInventory] = usePersistentArrayState<InventoryItemRecord>(
-    'farapay.v1.inventory-items',
-    CLOUDY_SHOP_INVENTORY
-  );
-  const [customerContacts, setCustomerContacts, contactStorageError, recoverContacts] = usePersistentArrayState<CustomerContactRecord>(
-    'farapay.v1.customer-contacts',
-    CLOUDY_SHOP_CONTACTS
-  );
-  const [crmLeads, setCrmLeads, crmStorageError, recoverCrm] = usePersistentArrayState<CrmLeadRecord>(
-    'farapay.v1.crm-leads',
-    productionInitialValue(INITIAL_CRM_LEADS)
-  );
-  const [auditLogs, setAuditLogs, auditStorageError, recoverAuditLogs] = usePersistentArrayState<AuditLogRecord>(
-    'farapay.v1.audit-logs',
-    productionInitialValue(INITIAL_AUDIT_LOGS)
-  );
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (window.localStorage.getItem(CLOUDY_SHOP_IMPORT_KEY) === '1') return;
-
-    const emptyKeys = [
-      'farapay.v1.gl-entries',
+  const [journalEntries, setJournalEntries] =
+    usePersistentArrayState<JournalEntryRecord>(
       'farapay.v1.journal-entries',
-      'farapay.v1.purchase-invoices',
-      'farapay.v1.payment-entries',
-      'farapay.v1.cheques',
-      'farapay.v1.cost-centers',
-      'farapay.v1.fixed-assets',
-      'farapay.v1.shareholders',
-      'farapay.v1.crm-leads',
-      'farapay.v1.audit-logs',
-    ];
-    for (const key of emptyKeys) {
-      window.localStorage.setItem(key, '[]');
-    }
-
-    const cleanAccounts = accounts.map((account) => ({
-      ...account,
-      openingBalance: 0,
-      balance: 0,
-    }));
-    const historicalInvoices = salesInvoices
-      .filter((invoice) => invoice.docstatus === 1)
-      .map((invoice) => ({
-        ...invoice,
-        isHistoricalArchive: true,
-        updateStock: false,
-      }));
-    window.localStorage.setItem('farapay.v1.accounts', JSON.stringify(cleanAccounts));
-    window.localStorage.setItem(
-      'farapay.v1.inventory-items',
-      JSON.stringify(CLOUDY_SHOP_INVENTORY)
+      INITIAL_JOURNAL_ENTRIES
     );
-    window.localStorage.setItem(
-      'farapay.v1.customer-contacts',
-      JSON.stringify(CLOUDY_SHOP_CONTACTS)
-    );
-    window.localStorage.setItem(
+  const [salesInvoices, setSalesInvoices] =
+    usePersistentArrayState<SalesInvoiceRecord>(
       'farapay.v1.sales-invoices',
-      JSON.stringify(historicalInvoices)
+      INITIAL_SALES_INVOICES
     );
-    window.localStorage.removeItem('farapay.pending-pos-sales');
-    window.localStorage.setItem(PRODUCTION_MODE_KEY, 'true');
-
-    setAccounts(cleanAccounts);
-    setGlEntries([]);
-    setJournalEntries([]);
-    setPurchaseInvoices([]);
-    setPaymentEntries([]);
-    setCheques([]);
-    setCostCenters([]);
-    setFixedAssets([]);
-    setShareholders([]);
-    setCrmLeads([]);
-    setAuditLogs([]);
-    setSalesInvoices(historicalInvoices);
-    setInventoryItems(CLOUDY_SHOP_INVENTORY);
-    setCustomerContacts(CLOUDY_SHOP_CONTACTS);
-    setProductionMode(true);
-    window.localStorage.setItem(CLOUDY_SHOP_IMPORT_KEY, '1');
-    setToastMessage(
-      historicalInvoices.length === 201
-        ? 'داده Cloudy Shop وارد شد: ۳۲۵ کالا، ۲۸ مخاطب و ۲۰۱ فاکتور تاریخی حفظ شد.'
-        : `داده Cloudy Shop وارد شد، اما ${historicalInvoices.length} فاکتور ثبت‌شده یافت شد؛ تعداد مورد انتظار ۲۰۱ است.`
+  const [purchaseInvoices, setPurchaseInvoices] =
+    usePersistentArrayState<PurchaseInvoiceRecord>(
+      'farapay.v1.purchase-invoices',
+      INITIAL_PURCHASE_INVOICES
     );
-  }, [
-    accounts,
-    salesInvoices,
-    setAuditLogs,
-    setAccounts,
-    setCheques,
-    setCostCenters,
-    setCrmLeads,
-    setFixedAssets,
-    setGlEntries,
-    setJournalEntries,
-    setPaymentEntries,
-    setPurchaseInvoices,
-    setSalesInvoices,
-    setShareholders,
-    setInventoryItems,
-    setCustomerContacts,
-    setProductionMode,
-    setToastMessage,
-  ]);
-
-  const storageRecoveryIssues = [
-    { key: 'farapay.v1.accounts', error: accountsStorageError, recover: recoverAccounts },
-    { key: 'farapay.v1.gl-entries', error: glStorageError, recover: recoverGl },
-    { key: 'farapay.v1.journal-entries', error: journalStorageError, recover: recoverJournal },
-    { key: 'farapay.v1.sales-invoices', error: salesStorageError, recover: recoverSales },
-    { key: 'farapay.v1.purchase-invoices', error: purchaseStorageError, recover: recoverPurchases },
-    { key: 'farapay.v1.payment-entries', error: paymentStorageError, recover: recoverPayments },
-    { key: 'farapay.v1.cheques', error: chequeStorageError, recover: recoverCheques },
-    { key: 'farapay.v1.cost-centers', error: costCenterStorageError, recover: recoverCostCenters },
-    { key: 'farapay.v1.fixed-assets', error: fixedAssetStorageError, recover: recoverFixedAssets },
-    { key: 'farapay.v1.shareholders', error: shareholderStorageError, recover: recoverShareholders },
-    { key: 'farapay.v1.inventory-items', error: inventoryStorageError, recover: recoverInventory },
-    { key: 'farapay.v1.customer-contacts', error: contactStorageError, recover: recoverContacts },
-    { key: 'farapay.v1.crm-leads', error: crmStorageError, recover: recoverCrm },
-    { key: 'farapay.v1.audit-logs', error: auditStorageError, recover: recoverAuditLogs },
-  ].filter((issue) => issue.error !== null);
-
-  const downloadCorruptedStorage = () => {
-    try {
-      const recoveryData = Object.fromEntries(
-        storageRecoveryIssues.map(({ key }) => [key, window.localStorage.getItem(key)])
-      );
-      const url = URL.createObjectURL(
-        new Blob([JSON.stringify(recoveryData, null, 2)], { type: 'application/json' })
-      );
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = 'farapay-corrupted-storage-recovery.json';
-      anchor.click();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (error) {
-      console.error('Could not export corrupted FaraPay storage.', error);
-      showToast('خروجی گرفتن از داده‌ی خراب‌شده ناموفق بود؛ داده‌ها دست‌نخورده باقی ماندند.');
-    }
-  };
-
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-  };
-
-  const handleImportHesabfaData = (value: unknown) => {
-    try {
-      const payload = parseHesabfaImportPayload(value);
-      const summary = summarizeHesabfaImport(payload);
-      window.localStorage.setItem(PRODUCTION_MODE_KEY, 'true');
-      setProductionMode(true);
-      setAccounts((currentAccounts) =>
-        currentAccounts.map((account) => ({ ...account, openingBalance: 0, balance: 0 }))
-      );
-      setGlEntries([]);
-      setJournalEntries([]);
-      setSalesInvoices(payload.salesInvoices);
-      setPurchaseInvoices([]);
-      setPaymentEntries([]);
-      setCheques([]);
-      setCostCenters([]);
-      setFixedAssets([]);
-      setShareholders([]);
-      setInventoryItems(payload.products);
-      setCustomerContacts(payload.contacts);
-      setCrmLeads([]);
-      setAuditLogs([]);
-      showToast(
-        `ورود انجام شد: ${summary.productCount} کالا، ${summary.contactCount} مخاطب و ${summary.invoiceCount} فاکتور تاریخی.`
-      );
-    } catch (error) {
-      console.error('Hesabfa import failed; existing records were not replaced.', error);
-      showToast(
-        error instanceof Error
-          ? `ورود انجام نشد: ${error.message}`
-          : 'ورود انجام نشد؛ داده‌های قبلی دست‌نخورده باقی ماندند.'
-      );
-    }
-  };
-
-  useEffect(() => {
-    if (!toastMessage) return;
-    const timer = setTimeout(() => setToastMessage(null), 4200);
-    return () => clearTimeout(timer);
-  }, [toastMessage]);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        setShowAwesomebar((prev) => !prev);
-      }
-      if (e.key === 'Escape') {
-        setShowAwesomebar(false);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
-
-  const appendAudit = (
-    docType: string,
-    docId: string,
-    fieldChanged: string,
-    oldValue: string,
-    newValue: string
-  ) => {
-    setAuditLogs((prev) => [
-      {
-        id: `aud-${Date.now()}`,
-        timestamp: `${formatPersianDate()} — اکنون`,
-        user: 'کاربر فعال',
-        role: formatRoleName(activeRole),
-        docType,
-        docId,
-        fieldChanged,
-        oldValue,
-        newValue,
-      },
-      ...prev,
-    ]);
-  };
-
-  const appendGLEntries = (entries: Omit<GLEntryRecord, 'id'>[]) => {
-    const withIds: GLEntryRecord[] = entries.map((e, i) => ({
-      ...e,
-      id: `gle-${Date.now()}-${i}`,
-    }));
-    setGlEntries((prev) => [...withIds, ...prev]);
-  };
-
-  // =========================================================================
-  // 1. SALES INVOICE ENGINE (Draft / Submit / Cancel / Credit Note — NO TAX)
-  // =========================================================================
-  const postSalesInvoiceGLAndStock = (
-    inv: SalesInvoiceRecord,
-    isReverse = false,
-    voucherNo = inv.invoiceNo,
-    postingMode: 'invoice' | 'return' = 'invoice'
-  ) => {
-    const sign = isReverse ? -1 : 1;
-
-    if (!isReverse) {
-      const inactiveLine = inv.lines?.find((line) =>
-        inventoryItems.some((item) => item.sku === line.sku && item.isActive === false)
-      );
-      if (inactiveLine) {
-        showToast(`کالای ${inactiveLine.sku} غیرفعال است و در فروش جدید قابل انتخاب نیست.`);
-        return false;
-      }
-    }
-
-    let cogsAmount = inv.cogsAmount || 0;
-    if (inv.updateStock && (!inv.lines || inv.lines.length === 0)) {
-      showToast(`فاکتور ${inv.invoiceNo} ردیف کالای ساخت‌یافته ندارد؛ ثبت یا برگشت انبار امن نیست.`);
-      return false;
-    }
-    if (inv.updateStock) {
-      if (!isReverse) {
-        const soldLines = inv.lines!.map((l) => ({ sku: l.sku, qty: l.qty }));
-
-        const deduction = deductStockWithBundles(inventoryItems, soldLines);
-        if (deduction.insufficientStockError) {
-          showToast(deduction.insufficientStockError);
-          return false;
-        }
-        setInventoryItems(deduction.updatedInventory);
-        cogsAmount = deduction.totalCogs || cogsAmount;
-      } else {
-        const soldLines = inv.lines!.map((l) => ({ sku: l.sku, qty: l.qty }));
-        setInventoryItems((prev) => restoreStockWithBundles(prev, soldLines));
-      }
-    }
-
-    const netRevenue = inv.totalAmount;
-    const doubleEntryLines = buildSalesInvoiceLedgerLines({
-      totalAmount: netRevenue,
-      paidAmount: inv.paidAmount,
-      cogsAmount,
-      updateStock: inv.updateStock,
-      isReverse,
-      postingMode,
-    });
-
-    setAccounts((prev) => postDoubleEntryToAccounts(prev, doubleEntryLines));
-
-    const byCode = new Map<string, AccountNode>(accounts.map((a) => [a.code, a]));
-    appendGLEntries(
-      doubleEntryLines.map((l) => ({
-        postingDate: inv.date,
-        accountCode: l.accountCode,
-        accountName: byCode.get(l.accountCode)?.name || l.accountCode,
-        partyType: 'مشتری',
-        partyName: inv.customerName,
-        debit: l.debit,
-        credit: l.credit,
-        voucherType: 'Sales Invoice',
-        voucherNo,
-        costCenter: inv.costCenter || 'فروشگاه و شوروم شعبه الهیه',
-        branchDimension: inv.branchDimension,
-        remarks: isReverse
-          ? `سند معکوس ابطال/برگشت فاکتور ${inv.invoiceNo}`
-          : `ثبت قطعی فاکتور فروش ${inv.invoiceNo}`,
-        isReversal: isReverse,
-      }))
+  const [paymentEntries, setPaymentEntries] =
+    usePersistentArrayState<PaymentEntryRecord>(
+      'farapay.v1.payment-entries',
+      INITIAL_PAYMENT_ENTRIES
     );
-
-    if (inv.costCenter) {
-      setCostCenters((prev) =>
-        prev.map((cc) =>
-          cc.name === inv.costCenter
-            ? { ...cc, revenueGenerated: Math.max(0, cc.revenueGenerated + sign * netRevenue) }
-            : cc
-        )
-      );
-    }
-
-    return true;
-  };
-
-  const handleCreateSalesInvoice = (newInv: SalesInvoiceRecord): boolean => {
-    const inactiveLine = newInv.lines?.find((line) =>
-      inventoryItems.some((item) => item.sku === line.sku && item.isActive === false)
+  const [costCenters, setCostCenters] = usePersistentArrayState<CostCenterRecord>(
+    'farapay.v4.cost-centers',
+    INITIAL_COST_CENTERS
+  );
+  const [fixedAssets, setFixedAssets] = usePersistentArrayState<FixedAssetRecord>(
+    'farapay.v4.fixed-assets',
+    INITIAL_FIXED_ASSETS
+  );
+  const [shareholders, setShareholders] =
+    usePersistentArrayState<ShareholderRecord>(
+      'farapay.v4.shareholders',
+      INITIAL_SHAREHOLDERS
     );
-    if (inactiveLine) {
-      showToast(`کالای ${inactiveLine.sku} غیرفعال است و در فاکتور فروش جدید قابل استفاده نیست.`);
-      return false;
-    }
-    if (newInv.docstatus === 1) {
-      const ok = postSalesInvoiceGLAndStock(newInv, false);
-      if (!ok) return false;
-    }
-    setSalesInvoices((prev) => [newInv, ...prev]);
-    appendAudit(
-      'فاکتور فروش',
-      newInv.invoiceNo,
-      'وضعیت سند',
-      '—',
-      newInv.docstatus === 1 ? 'ثبت قطعی' : 'پیش‌نویس'
+  const [shareholderSnapshots, setShareholderSnapshots] =
+    usePersistentArrayState<ShareholderRuleSnapshot>(
+      'farapay.v4.shareholder-snapshots',
+      []
     );
-    showToast(
-      newInv.docstatus === 1
-        ? `فاکتور فروش ${newInv.invoiceNo} ثبت قطعی شد و اسناد درآمد و بهای تمام‌شده در دفتر کل صادر گردید.`
-        : `فاکتور فروش ${newInv.invoiceNo} به صورت پیش‌نویس ذخیره شد.`
+  const [shareholderDrawings, setShareholderDrawings] =
+    usePersistentArrayState<ShareholderDrawingRecord>(
+      'farapay.v4.shareholder-drawings',
+      []
     );
-    return true;
-  };
-
-  const handleSubmitSalesInvoice = (id: string) => {
-    const target = salesInvoices.find((s) => s.id === id);
-    if (!target || target.docstatus !== 0) return;
-    if (target.isHistoricalArchive) {
-      showToast('فاکتور بایگانی تاریخی فقط‌خواندنی است و قابل ثبت قطعی نیست.');
-      return;
-    }
-    const submittedInv: SalesInvoiceRecord = {
-      ...target,
-      docstatus: 1,
-      status: target.paidAmount >= target.totalAmount ? 'پرداخت‌شده' : 'اقساطی فعال',
-    };
-    const ok = postSalesInvoiceGLAndStock(submittedInv, false);
-    if (!ok) return;
-    setSalesInvoices((prev) => prev.map((s) => (s.id === id ? submittedInv : s)));
-    appendAudit('فاکتور فروش', target.invoiceNo, 'وضعیت سند', 'پیش‌نویس', 'ثبت قطعی');
-    showToast(`فاکتور ${target.invoiceNo} از پیش‌نویس به ثبت قطعی تغییر یافت و در دفتر کل ثبت شد.`);
-  };
-
-  const handleCancelSalesInvoice = (id: string) => {
-    const target = salesInvoices.find((s) => s.id === id);
-    if (!target || target.docstatus !== 1) return;
-    if (target.isHistoricalArchive) {
-      showToast('فاکتور بایگانی تاریخی فقط‌خواندنی است و قابل ابطال یا برگشت نیست.');
-      return;
-    }
-    if (target.returnAgainst) {
-      const source = salesInvoices.find((invoice) => invoice.invoiceNo === target.returnAgainst);
-      if (!source) {
-        showToast(`سند مبنا برای برگشت ${target.invoiceNo} پیدا نشد؛ ابطال انجام نشد.`);
-        return;
-      }
-      if ((target.creditedAmount || 0) > 0) {
-        showToast('ابتدا یادداشت بستانکاری مرتبط را ابطال کنید؛ سپس فاکتور اصلی قابل ابطال است.');
-        return;
-      }
-      if (
-        paymentEntries.some(
-          (entry) =>
-            entry.docstatus === 1 &&
-            entry.paymentType === 'بازپرداخت به مشتری (Refund)' &&
-            entry.referenceVoucherNo === target.invoiceNo
-        )
-      ) {
-        showToast('ابتدا اسناد بازپرداخت مرتبط را ابطال کنید؛ سپس یادداشت بستانکاری قابل ابطال است.');
-        return;
-      }
-      if (!postSalesInvoiceGLAndStock(target, false, target.invoiceNo, 'return')) return;
-      setSalesInvoices((prev) =>
-        prev.map((invoice) =>
-          invoice.invoiceNo === source.invoiceNo
-            ? { ...invoice, creditedAmount: 0 }
-            : invoice.invoiceNo === target.invoiceNo
-              ? { ...invoice, docstatus: 2, status: 'ابطال‌شده' }
-              : invoice
-        )
-      );
-      appendAudit('یادداشت بستانکاری', target.invoiceNo, 'وضعیت سند', 'ثبت قطعی', 'ابطال‌شده');
-      showToast(`یادداشت بستانکاری ${target.invoiceNo} ابطال و اثر آن در دفترکل و انبار معکوس شد.`);
-      return;
-    }
-    if ((target.creditedAmount || 0) > 0) {
-      showToast('ابتدا یادداشت بستانکاری مرتبط را ابطال کنید؛ سپس فاکتور اصلی قابل ابطال است.');
-      return;
-    }
-    if (target.paidAmount > 0) {
-      showToast('ابتدا اسناد دریافت مرتبط را ابطال کنید؛ فاکتور دارای دریافت را نمی‌توان مستقیم ابطال کرد.');
-      return;
-    }
-    if (!postSalesInvoiceGLAndStock(target, true)) return;
-    setSalesInvoices((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, docstatus: 2, status: 'ابطال‌شده' } : s))
+  const [recurringTemplates, setRecurringTemplates] =
+    usePersistentArrayState<RecurringExpenseTemplate>(
+      'farapay.v4.recurring-templates',
+      INITIAL_RECURRING_EXPENSE_TEMPLATES
     );
-    appendAudit('فاکتور فروش', target.invoiceNo, 'وضعیت سند', 'ثبت قطعی', 'ابطال‌شده');
-    showToast(`فاکتور ${target.invoiceNo} ابطال شد و سند معکوس در دفتر کل و انبار صادر گردید.`);
-  };
-
-  const handleCreateCreditNote = (id: string) => {
-    const orig = salesInvoices.find((s) => s.id === id);
-    if (orig?.isHistoricalArchive) {
-      showToast('برای فاکتور بایگانی تاریخی نمی‌توان یادداشت بستانکاری ثبت کرد.');
-      return;
-    }
-    if (
-      !orig ||
-      orig.docstatus !== 1 ||
-      orig.returnAgainst ||
-      orig.status === 'مرجوعی (یادداشت بستانکاری)' ||
-      (orig.creditedAmount || 0) > 0
-    ) {
-      showToast('برای این فاکتور یادداشت بستانکاری ثبت‌شده است یا فاکتور قابل برگشت نیست.');
-      return;
-    }
-    const creditNoteNo = `CN-${getPersianYear()}-${String(13 + salesInvoices.length).padStart(4, '0')}`;
-    const cn: SalesInvoiceRecord = {
-      ...orig,
-      id: `cn-${Date.now()}`,
-      invoiceNo: creditNoteNo,
-      returnAgainst: orig.invoiceNo,
-      creditedAmount: 0,
-      paidAmount: 0,
-      docstatus: 1,
-      status: 'مرجوعی (یادداشت بستانکاری)',
-      itemsSummary: `برگشت کامل عطف به ${orig.invoiceNo} (${orig.itemsSummary})`,
-    };
-    if (!postSalesInvoiceGLAndStock(orig, true, creditNoteNo, 'return')) return;
-    setSalesInvoices((prev) => [
-      cn,
-      ...prev.map((invoice) =>
-        invoice.invoiceNo === orig.invoiceNo
-          ? { ...invoice, creditedAmount: invoice.totalAmount }
-          : invoice
-      ),
-    ]);
-    appendAudit('یادداشت بستانکاری', creditNoteNo, 'مبلغ برگشت', '۰ تومان', `${formatCurrency(orig.totalAmount)} تومان`);
-    showToast(`یادداشت بستانکاری ${cn.invoiceNo} صادر شد و کالا به انبار بازگشت.`);
-  };
-
-  // =========================================================================
-  // 2. PURCHASE INVOICE ENGINE (Multi-Line + Landed Cost 2104 + Moving Avg)
-  // =========================================================================
-  const postPurchaseInvoiceGLAndStock = (
-    pinv: PurchaseInvoiceRecord,
-    isReverse = false,
-    voucherNo = pinv.billNo
-  ): boolean => {
-    const purchaseLines = aggregateInvoiceLines(pinv.lines || []);
-
-    if (purchaseLines.length === 0) {
-      showToast(`فاکتور ${pinv.billNo} ردیف کالای ساخت‌یافته ندارد؛ ثبت یا برگشت انبار امن نیست.`);
-      return false;
-    }
-
-    if (isReverse) {
-      const shortages = purchaseLines
-        .map((line) => ({
-          line,
-          currentQty: inventoryItems.find((item) => item.sku === line.sku)?.stockQty,
-        }))
-        .filter(({ line, currentQty }) => currentQty === undefined || currentQty < line.qty);
-      if (shortages.length > 0) {
-        const details = shortages
-          .map(({ line, currentQty }) => `${line.sku}: ${currentQty ?? 0} موجود، ${line.qty} لازم`)
-          .join('؛ ');
-        showToast(`ابطال خرید امن نیست؛ موجودی کالا برای برگشت کافی نیست (${details}).`);
-        return false;
-      }
-    }
-
-    const reverseInventoryValue = isReverse
-      ? purchaseLines.reduce((total, line) => {
-          const item = inventoryItems.find((candidate) => candidate.sku === line.sku);
-          return total + line.qty * (item?.valuationRate || 0);
-        }, 0)
-      : pinv.totalAmount;
-    const supplierNet = Math.max(0, pinv.totalAmount - pinv.landedCostAdded);
-
-    const lines: { accountCode: string; debit: number; credit: number }[] = isReverse
-      ? buildPurchaseInvoiceReversalLines(
-          pinv.totalAmount,
-          pinv.landedCostAdded,
-          reverseInventoryValue
-        )
-      : [
-          { accountCode: '1104', debit: pinv.totalAmount, credit: 0 },
-          { accountCode: '2101', debit: 0, credit: supplierNet },
-          ...(pinv.landedCostAdded > 0
-            ? [{ accountCode: '2104', debit: 0, credit: pinv.landedCostAdded }]
-            : []),
-        ];
-
-    setAccounts((prev) => postDoubleEntryToAccounts(prev, lines));
-
-    const byCode = new Map<string, AccountNode>(accounts.map((a) => [a.code, a]));
-    appendGLEntries(
-      lines.map((l) => ({
-        postingDate: pinv.date,
-        accountCode: l.accountCode,
-        accountName: byCode.get(l.accountCode)?.name || l.accountCode,
-        partyType: 'تامین‌کننده',
-        partyName: l.accountCode === '2104' ? 'گمرک و ترخیص‌کار رسمی' : pinv.supplierName,
-        debit: l.debit,
-        credit: l.credit,
-        voucherType: 'Purchase Invoice',
-        voucherNo,
-        costCenter: pinv.costCenter || 'انبار مرکزی و لجستیک کهریزک',
-        branchDimension: pinv.branchDimension || 'انبار مرکزی کهریزک',
-        remarks: isReverse
-          ? `سند معکوس ابطال/برگشت خرید ${pinv.billNo}`
-          : `ورود کالا به انبار و ثبت تعهد خرید ${pinv.billNo}`,
-        isReversal: isReverse,
-      }))
+  const [monthlyExpenseLedger, setMonthlyExpenseLedger] =
+    usePersistentArrayState<MonthlyExpenseLedgerRecord>(
+      'farapay.v4.monthly-expense-ledger',
+      []
     );
-
-    if (purchaseLines.length > 0) {
-      const totalGoodsNet = purchaseLines.reduce((s, l) => s + l.netLineAmount, 0) || 1;
-      setInventoryItems((prev) =>
-        prev.map((item) => {
-          const pl = purchaseLines.find((l) => l.sku === item.sku);
-          if (!pl) return item;
-          if (isReverse) {
-            const newQty = item.stockQty - pl.qty;
-            return {
-              ...item,
-              stockQty: newQty,
-              valuationRate: item.valuationRate,
-            };
-          }
-          const shareOfLanded = Math.round(
-            pinv.landedCostAdded * (pl.netLineAmount / totalGoodsNet)
-          );
-          const effectiveIncomingUnitRate = Math.round(
-            (pl.netLineAmount + shareOfLanded) / Math.max(1, pl.qty)
-          );
-          const mov = calculateMovingAverageValuation(
-            item.stockQty,
-            item.valuationRate,
-            pl.qty,
-            effectiveIncomingUnitRate
-          );
-          return {
-            ...item,
-            stockQty: mov.newQty,
-            valuationRate: mov.newValuationRate,
-          };
-        })
-      );
-    }
-    return true;
-  };
-
-  const handleCreatePurchaseInvoice = (newPinv: PurchaseInvoiceRecord): boolean => {
-    if (newPinv.docstatus === 1 && !postPurchaseInvoiceGLAndStock(newPinv, false)) {
-      return false;
-    }
-    setPurchaseInvoices((prev) => [newPinv, ...prev]);
-    appendAudit(
-      'فاکتور خرید',
-      newPinv.billNo,
-      'مبلغ کل خرید',
-      '۰ تومان',
-      `${formatCurrency(newPinv.totalAmount)} تومان`
+  const [warehouses, setWarehouses] = usePersistentArrayState<WarehouseRecord>(
+    'farapay.v4.warehouses',
+    INITIAL_WAREHOUSES
+  );
+  const [promotionRules, setPromotionRules] =
+    usePersistentArrayState<PromotionRuleRecord>(
+      'farapay.v4.promotion-rules',
+      INITIAL_PROMOTION_RULES
     );
-    showToast(
-      newPinv.docstatus === 1
-        ? `فاکتور خرید ${newPinv.billNo} ثبت قطعی شد؛ موجودی انبار (۱۱۰۴)، حساب تامین‌کننده (۲۱۰۱) و گمرک (۲۱۰۴) به‌روز شدند.`
-        : `فاکتور خرید ${newPinv.billNo} به صورت پیش‌نویس ذخیره شد.`
+  const [inventoryItems, setInventoryItems] =
+    usePersistentArrayState<InventoryItemRecord>(
+      'farapay.v1.inventory-items',
+      normalizeCloudyShopInventory(CLOUDY_SHOP_INVENTORY)
     );
-    return true;
-  };
-
-  const handleSubmitPurchaseInvoice = (id: string) => {
-    const target = purchaseInvoices.find((p) => p.id === id);
-    if (!target || target.docstatus !== 0) return;
-    const submitted: PurchaseInvoiceRecord = {
-      ...target,
-      docstatus: 1,
-      status: 'بدهکار باز',
-    };
-    if (!postPurchaseInvoiceGLAndStock(submitted, false)) return;
-    setPurchaseInvoices((prev) => prev.map((p) => (p.id === id ? submitted : p)));
-    showToast(`فاکتور خرید ${target.billNo} ثبت قطعی شد و به انبار و دفتر کل منتقل گردید.`);
-  };
-
-  const handleCancelPurchaseInvoice = (id: string) => {
-    const target = purchaseInvoices.find((p) => p.id === id);
-    if (!target || target.docstatus !== 1) return;
-    if (target.returnAgainst) {
-      const source = purchaseInvoices.find((invoice) => invoice.billNo === target.returnAgainst);
-      if (!source) {
-        showToast(`سند مبنا برای برگشت ${target.billNo} پیدا نشد؛ ابطال انجام نشد.`);
-        return;
-      }
-      if ((target.creditedAmount || 0) > 0) {
-        showToast('ابتدا یادداشت بدهکاری مرتبط را ابطال کنید؛ سپس فاکتور اصلی قابل ابطال است.');
-        return;
-      }
-      if (!postPurchaseInvoiceGLAndStock(target, false)) return;
-      setPurchaseInvoices((prev) =>
-        prev.map((invoice) =>
-          invoice.billNo === source.billNo
-            ? { ...invoice, creditedAmount: 0 }
-            : invoice.billNo === target.billNo
-              ? { ...invoice, docstatus: 2, status: 'ابطال‌شده' }
-              : invoice
-        )
-      );
-      showToast(`یادداشت بدهکاری ${target.billNo} ابطال و اثر آن در دفترکل و انبار معکوس شد.`);
-      return;
-    }
-    if ((target.creditedAmount || 0) > 0) {
-      showToast('ابتدا یادداشت بدهکاری مرتبط را ابطال کنید؛ سپس فاکتور اصلی قابل ابطال است.');
-      return;
-    }
-    if ((target.paidAmount || 0) > 0) {
-      showToast('ابتدا اسناد پرداخت مرتبط را ابطال کنید؛ فاکتور دارای پرداخت را نمی‌توان مستقیم ابطال کرد.');
-      return;
-    }
-    if (!postPurchaseInvoiceGLAndStock(target, true)) return;
-    setPurchaseInvoices((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, docstatus: 2, status: 'ابطال‌شده' } : p))
+  const [customerContacts, setCustomerContacts] =
+    usePersistentArrayState<CustomerContactRecord>(
+      'farapay.v1.customer-contacts',
+      CLOUDY_SHOP_CONTACTS
     );
-    showToast(`فاکتور خرید ${target.billNo} ابطال شد و سند معکوس صادر گردید.`);
-  };
-
-  const handleCreateDebitNote = (id: string) => {
-    const orig = purchaseInvoices.find((p) => p.id === id);
-    if (
-      !orig ||
-      orig.docstatus !== 1 ||
-      orig.returnAgainst ||
-      orig.status === 'برگشت از خرید (یادداشت بدهکاری)' ||
-      (orig.creditedAmount || 0) > 0
-    ) {
-      showToast('برای این فاکتور یادداشت بدهکاری ثبت‌شده است یا فاکتور قابل برگشت نیست.');
-      return;
-    }
-    const debitNoteNo = `DN-${getPersianYear()}-${String(10 + purchaseInvoices.length).padStart(4, '0')}`;
-    if (!postPurchaseInvoiceGLAndStock(orig, true, debitNoteNo)) return;
-    const dn: PurchaseInvoiceRecord = {
-      ...orig,
-      id: `dn-${Date.now()}`,
-      billNo: debitNoteNo,
-      returnAgainst: orig.billNo,
-      creditedAmount: 0,
-      docstatus: 1,
-      status: 'برگشت از خرید (یادداشت بدهکاری)',
-      itemsSummary: `برگشت کامل از خرید عطف به ${orig.billNo}`,
-    };
-    setPurchaseInvoices((prev) => [
-      dn,
-      ...prev.map((invoice) =>
-        invoice.billNo === orig.billNo
-          ? { ...invoice, creditedAmount: invoice.totalAmount }
-          : invoice
-      ),
-    ]);
-    showToast(`یادداشت بدهکاری (برگشت از خرید) ${dn.billNo} ثبت شد.`);
-  };
-
-  // =========================================================================
-  // 3. JOURNAL ENTRY ENGINE (Draft / Submit / Cancel + Cost Center Spend)
-  // =========================================================================
-  const postJournalGL = (je: JournalEntryRecord, isReverse = false) => {
-    const lines = je.lines.map((l) => ({
-      accountCode: l.accountCode,
-      debit: isReverse ? l.credit : l.debit,
-      credit: isReverse ? l.debit : l.credit,
-    }));
-    setAccounts((prev) => postDoubleEntryToAccounts(prev, lines));
-
-    appendGLEntries(
-      je.lines.map((l) => ({
-        postingDate: je.postingDate,
-        accountCode: l.accountCode,
-        accountName: l.accountName,
-        partyType: l.partyType || '—',
-        partyName: l.partyName || '—',
-        debit: isReverse ? l.credit : l.debit,
-        credit: isReverse ? l.debit : l.credit,
-        voucherType: 'Journal Entry',
-        voucherNo: je.voucherNo,
-        costCenter: l.costCenter || 'فروشگاه و شوروم شعبه الهیه',
-        branchDimension: l.dimensionBranch || je.branchDimension,
-        remarks: isReverse ? `ابطال سند روزنامه: ${je.title}` : l.note || je.title,
-        isReversal: isReverse,
-      }))
+  const [bulkSmsPool, setBulkSmsPool] =
+    usePersistentArrayState<BulkSmsContactRecord>(
+      'farapay.v4.bulk-sms-pool',
+      []
     );
-
-    const sign = isReverse ? -1 : 1;
-    setCostCenters((prev) =>
-      prev.map((cc) => {
-        const ccExpenseDelta = je.lines
-          .filter((l) => l.costCenter === cc.name && l.accountCode.startsWith('5'))
-          .reduce((s, l) => s + (l.debit - l.credit), 0);
-        const ccRevDelta = je.lines
-          .filter((l) => l.costCenter === cc.name && l.accountCode.startsWith('4'))
-          .reduce((s, l) => s + (l.credit - l.debit), 0);
-        return {
-          ...cc,
-          spentAmount: Math.max(0, cc.spentAmount + sign * ccExpenseDelta),
-          revenueGenerated: Math.max(0, cc.revenueGenerated + sign * ccRevDelta),
-        };
-      })
-    );
-  };
-
-  const handleSaveJournalEntry = (je: JournalEntryRecord) => {
-    const validAccountCodes = getPostableAccountCodes(accounts);
-    const validation = validateJournalEntry(je.lines, validAccountCodes);
-    if (!validation.isValid) {
-      showToast(validation.errorMessage || 'سند روزنامه معتبر نیست و ذخیره نشد.');
-      return;
-    }
-    if (je.docstatus === 1) {
-      postJournalGL(je, false);
-    }
-    setJournalEntries((prev) => [je, ...prev]);
-    appendAudit(
-      'سند روزنامه',
-      je.voucherNo,
-      'ثبت سند',
-      '—',
-      `${je.docstatus === 1 ? 'ثبت قطعی' : 'پیش‌نویس'} (${formatCurrency(je.totalDebit)} تومان)`
-    );
-    showToast(
-      je.docstatus === 1
-        ? `سند روزنامه ${je.voucherNo} در دفتر کل ثبت قطعی شد و مراکز هزینه به‌روز گردیدند.`
-        : `سند روزنامه ${je.voucherNo} به صورت پیش‌نویس ذخیره شد.`
-    );
-  };
-
-  const handleSubmitJournalEntry = (id: string) => {
-    const target = journalEntries.find((j) => j.id === id);
-    if (!target || target.docstatus !== 0) return;
-    const validAccountCodes = getPostableAccountCodes(accounts);
-    const validation = validateJournalEntry(target.lines, validAccountCodes);
-    if (!validation.isValid) {
-      showToast(validation.errorMessage || 'سند روزنامه معتبر نیست و ثبت قطعی نشد.');
-      return;
-    }
-    const submitted: JournalEntryRecord = { ...target, docstatus: 1 };
-    postJournalGL(submitted, false);
-    setJournalEntries((prev) => prev.map((j) => (j.id === id ? submitted : j)));
-    showToast(`سند روزنامه ${target.voucherNo} ثبت قطعی شد.`);
-  };
-
-  const handleCancelJournalEntry = (id: string) => {
-    const target = journalEntries.find((j) => j.id === id);
-    if (!target || target.docstatus !== 1) return;
-    postJournalGL(target, true);
-    setJournalEntries((prev) =>
-      prev.map((j) => (j.id === id ? { ...j, docstatus: 2 } : j))
-    );
-    showToast(`سند روزنامه ${target.voucherNo} ابطال شد و آرتیکل معکوس در دفتر کل صادر گردید.`);
-  };
-
-  // =========================================================================
-  // 4. PAYMENT ENTRY & CHEQUE CLEARANCE ENGINE
-  // =========================================================================
-  const handleCreatePaymentEntry = (pe: PaymentEntryRecord) => {
-    const bankAccount = accounts.find((account) => account.code === pe.bankAccountCode);
-    if (!bankAccount || bankAccount.level === 'گروه' || bankAccount.category !== 'دارایی') {
-      showToast('حساب دریافت/پرداخت باید یک حساب جزئی از گروه دارایی‌ها باشد.');
-      return;
-    }
-    if (pe.docstatus !== 1) {
-      showToast('سند دریافت/پرداخت جدید باید با وضعیت ثبت قطعی ارسال شود.');
-      return;
-    }
-    const isCustomerRefund = pe.paymentType === 'بازپرداخت به مشتری (Refund)';
-    const isReceive = pe.paymentType === 'دریافت از مشتری (Receive)';
-    const salesInvoice = isReceive || isCustomerRefund
-      ? salesInvoices.find((invoice) => invoice.invoiceNo === pe.referenceVoucherNo)
-      : undefined;
-    if (salesInvoice?.isHistoricalArchive) {
-      showToast('برای فاکتور بایگانی تاریخی نمی‌توان دریافت یا بازپرداخت ثبت کرد.');
-      return;
-    }
-    const purchaseInvoice = !isReceive && !isCustomerRefund
-      ? purchaseInvoices.find((invoice) => invoice.billNo === pe.referenceVoucherNo)
-      : undefined;
-    const invoice = salesInvoice || purchaseInvoice;
-    const refundedAmount = isCustomerRefund
-      ? paymentEntries
-          .filter(
-            (entry) =>
-              entry.docstatus === 1 &&
-              entry.paymentType === 'بازپرداخت به مشتری (Refund)' &&
-              entry.referenceVoucherNo === pe.referenceVoucherNo
-          )
-          .reduce((total, entry) => total + entry.amount, 0)
-      : 0;
-    const refundSourceInvoice =
-      isCustomerRefund && salesInvoice?.returnAgainst
-        ? salesInvoices.find((candidate) => candidate.invoiceNo === salesInvoice.returnAgainst)
-        : undefined;
-    const refundableAmount = Math.min(
-      invoice?.totalAmount || 0,
-      refundSourceInvoice?.paidAmount || 0
-    );
-    const outstanding = invoice
-      ? isCustomerRefund
-        ? refundableAmount - refundedAmount
-        : invoice.totalAmount - (invoice.paidAmount || 0) - (invoice.creditedAmount || 0)
-      : 0;
-    const settlementValidation = validateSettlementAmount(pe.amount, outstanding);
-
-    if (
-      !settlementValidation.isValid ||
-      !invoice ||
-      invoice.docstatus !== 1 ||
-      (isCustomerRefund
-        ? !invoice.returnAgainst ||
-          !refundSourceInvoice ||
-          invoice.status !== 'مرجوعی (یادداشت بستانکاری)'
-        : Boolean(invoice.returnAgainst) || invoice.status === 'مرجوعی (یادداشت بستانکاری)') ||
-      invoice.status === 'برگشت از خرید (یادداشت بدهکاری)' ||
-      invoice.status === 'ابطال‌شده'
-    ) {
-      showToast(
-        settlementValidation.errorMessage ||
-          'فاکتور مرجع برای دریافت/پرداخت معتبر نیست؛ مانده فاکتور را بررسی کنید.'
-      );
-      return;
-    }
-
-    const expectedParty = isReceive || isCustomerRefund
-      ? (salesInvoice as SalesInvoiceRecord).customerName
-      : (purchaseInvoice as PurchaseInvoiceRecord).supplierName;
-    if (pe.partyName.trim() !== expectedParty) {
-      showToast('نام طرف حساب با فاکتور مرجع یکسان نیست؛ سند تسویه ثبت نشد.');
-      return;
-    }
-
-    setPaymentEntries((prev) => [pe, ...prev]);
-    const lines = isReceive
-      ? [
-          { accountCode: pe.bankAccountCode, debit: pe.amount, credit: 0 },
-          { accountCode: '1102', debit: 0, credit: pe.amount },
-        ]
-      : isCustomerRefund
-        ? buildCustomerRefundLedgerLines(pe.bankAccountCode, pe.amount)
-        : [
-          { accountCode: '2101', debit: pe.amount, credit: 0 },
-          { accountCode: pe.bankAccountCode, debit: 0, credit: pe.amount },
-        ];
-
-    setAccounts((prev) => postDoubleEntryToAccounts(prev, lines));
-
-    const byCode = new Map<string, AccountNode>(accounts.map((a) => [a.code, a]));
-    appendGLEntries(
-      lines.map((l) => ({
-        postingDate: pe.postingDate,
-        accountCode: l.accountCode,
-        accountName: byCode.get(l.accountCode)?.name || l.accountCode,
-        partyType: isReceive || isCustomerRefund ? 'مشتری' : 'تامین‌کننده',
-        partyName: pe.partyName,
-        debit: l.debit,
-        credit: l.credit,
-        voucherType: 'Payment Entry',
-        voucherNo: pe.paymentNo,
-        costCenter: pe.costCenter,
-        branchDimension: pe.branchDimension,
-        remarks: `${isCustomerRefund ? 'بازپرداخت یادداشت بستانکاری' : 'تسویه فاکتور'} ${pe.referenceVoucherNo} از طریق ${pe.modeOfPayment}`,
-      }))
-    );
-
-    if (isReceive || isCustomerRefund) {
-      setSalesInvoices((prev) =>
-        prev.map((s) => {
-          if (s.invoiceNo !== pe.referenceVoucherNo) return s;
-          const nextPaid = isCustomerRefund ? refundedAmount + pe.amount : s.paidAmount + pe.amount;
-          return {
-            ...s,
-            paidAmount: nextPaid,
-            status:
-              !isCustomerRefund && nextPaid + (s.creditedAmount || 0) >= s.totalAmount
-                ? 'پرداخت‌شده'
-                : s.status,
-          };
-        })
-      );
-    } else {
-      setPurchaseInvoices((prev) =>
-        prev.map((p) => {
-          if (p.billNo !== pe.referenceVoucherNo) return p;
-        const nextPaid = (p.paidAmount || 0) + pe.amount;
-          return {
-            ...p,
-            paidAmount: nextPaid,
-          status:
-            nextPaid + (p.creditedAmount || 0) >= p.totalAmount ? 'تسویه‌شده' : p.status,
-        };
-      })
-      );
-    }
-
-    showToast(
-      `سند خزانه ${pe.paymentNo} ثبت شد و مانده فاکتور ${pe.referenceVoucherNo} کاهش یافت.`
-    );
-  };
-
-  const handleCancelPaymentEntry = (id: string) => {
-    const target = paymentEntries.find((entry) => entry.id === id);
-    if (!target || target.docstatus !== 1) return;
-    const bankAccount = accounts.find((account) => account.code === target.bankAccountCode);
-    if (
-      !Number.isFinite(target.amount) ||
-      target.amount <= 0 ||
-      !bankAccount ||
-      bankAccount.level === 'گروه' ||
-      bankAccount.category !== 'دارایی'
-    ) {
-      showToast('مبلغ یا حساب دریافت/پرداخت معتبر نیست؛ سند ابطال نشد.');
-      return;
-    }
-
-    const isCustomerRefund = target.paymentType === 'بازپرداخت به مشتری (Refund)';
-    const isReceive = target.paymentType === 'دریافت از مشتری (Receive)';
-    const salesInvoice = isReceive || isCustomerRefund
-      ? salesInvoices.find((invoice) => invoice.invoiceNo === target.referenceVoucherNo)
-      : undefined;
-    const purchaseInvoice = !isReceive && !isCustomerRefund
-      ? purchaseInvoices.find((invoice) => invoice.billNo === target.referenceVoucherNo)
-      : undefined;
-    const invoice = salesInvoice || purchaseInvoice;
-    if (!invoice || invoice.docstatus !== 1) {
-      showToast('فاکتور مرجع معتبر یا ثبت‌شده نیست؛ سند پرداخت ابطال نشد.');
-      return;
-    }
-    const activeRefundAmount = isCustomerRefund
-      ? paymentEntries
-          .filter(
-            (entry) =>
-              entry.docstatus === 1 &&
-              entry.paymentType === 'بازپرداخت به مشتری (Refund)' &&
-              entry.referenceVoucherNo === target.referenceVoucherNo
-          )
-          .reduce((total, entry) => total + entry.amount, 0)
-      : invoice.paidAmount || 0;
-    if (activeRefundAmount < target.amount) {
-      showToast('مانده پرداخت‌شده فاکتور با این سند تطبیق ندارد؛ ابطال برای جلوگیری از مانده نادرست متوقف شد.');
-      return;
-    }
-    if (isReceive && salesInvoice?.creditedAmount) {
-      const creditNoteNumbers = new Set(
-        salesInvoices
-          .filter((candidate) => candidate.returnAgainst === salesInvoice.invoiceNo)
-          .map((candidate) => candidate.invoiceNo)
-      );
-      const refundedAgainstInvoice = paymentEntries
-        .filter(
-          (entry) =>
-            entry.docstatus === 1 &&
-            entry.paymentType === 'بازپرداخت به مشتری (Refund)' &&
-            creditNoteNumbers.has(entry.referenceVoucherNo)
-        )
-        .reduce((total, entry) => total + entry.amount, 0);
-      if (salesInvoice.paidAmount - target.amount < refundedAgainstInvoice) {
-        showToast('ابتدا بازپرداخت‌های انجام‌شده را ابطال کنید؛ دریافت مبنا برای این بازپرداخت لازم است.');
-        return;
-      }
-    }
-
-    const reversalLines = isReceive
-      ? [
-          { accountCode: target.bankAccountCode, debit: 0, credit: target.amount },
-          { accountCode: '1102', debit: target.amount, credit: 0 },
-        ]
-      : isCustomerRefund
-        ? buildCustomerRefundLedgerLines(target.bankAccountCode, target.amount, true)
-        : [
-          { accountCode: '2101', debit: 0, credit: target.amount },
-          { accountCode: target.bankAccountCode, debit: target.amount, credit: 0 },
-        ];
-    setAccounts((prev) => postDoubleEntryToAccounts(prev, reversalLines));
-
-    const byCode = new Map(accounts.map((account) => [account.code, account.name]));
-    appendGLEntries(
-      reversalLines.map((line) => ({
-        postingDate: formatPersianDate(),
-        accountCode: line.accountCode,
-        accountName: byCode.get(line.accountCode) || line.accountCode,
-        partyType: isReceive || isCustomerRefund ? 'مشتری' : 'تامین‌کننده',
-        partyName: target.partyName,
-        debit: line.debit,
-        credit: line.credit,
-        voucherType: 'Payment Entry',
-        voucherNo: target.paymentNo,
-        costCenter: target.costCenter,
-        branchDimension: target.branchDimension,
-        remarks: `ابطال سند دریافت/پرداخت ${target.paymentNo}`,
-        isReversal: true,
-      }))
-    );
-    setPaymentEntries((prev) =>
-      prev.map((entry) => (entry.id === id ? { ...entry, docstatus: 2 } : entry))
-    );
-
-    const nextPaid = activeRefundAmount - target.amount;
-    if (salesInvoice && isCustomerRefund) {
-      setSalesInvoices((prev) =>
-        prev.map((item) =>
-          item.id === salesInvoice.id ? { ...item, paidAmount: nextPaid } : item
-        )
-      );
-    } else if (salesInvoice) {
-      setSalesInvoices((prev) =>
-        prev.map((item) =>
-          item.id === salesInvoice.id
-            ? {
-                ...item,
-                paidAmount: nextPaid,
-                status:
-                  nextPaid + (item.creditedAmount || 0) >= item.totalAmount
-                    ? 'پرداخت‌شده'
-                    : 'اقساطی فعال',
-              }
-            : item
-        )
-      );
-    } else if (purchaseInvoice) {
-      setPurchaseInvoices((prev) =>
-        prev.map((item) =>
-          item.id === purchaseInvoice.id
-            ? {
-                ...item,
-                paidAmount: nextPaid,
-                status:
-                  nextPaid + (item.creditedAmount || 0) >= item.totalAmount
-                    ? 'تسویه‌شده'
-                    : 'بدهکار باز',
-              }
-            : item
-        )
-      );
-    }
-
-    appendAudit(
-      'سند دریافت و پرداخت',
-      target.paymentNo,
-      'وضعیت سند',
-      'ثبت قطعی',
-      'ابطال‌شده'
-    );
-    showToast(`سند خزانه ${target.paymentNo} ابطال و اثر حسابداری آن معکوس شد.`);
-  };
-
-  const handleClearCheque = (id: string) => {
-    const target = cheques.find((c) => c.id === id);
-    if (!target || target.status !== 'در جریان وصول') return;
-    if (!Number.isFinite(target.amount) || target.amount <= 0) {
-      showToast('مبلغ چک معتبر نیست؛ وصول ثبت نشد.');
-      return;
-    }
-
-    const lines =
-      target.type === 'دریافتنی از مشتری'
-        ? [
-            { accountCode: '110101', debit: target.amount, credit: 0 },
-            { accountCode: '1103', debit: 0, credit: target.amount },
-          ]
-        : [
-            { accountCode: '2101', debit: target.amount, credit: 0 },
-            { accountCode: '110101', debit: 0, credit: target.amount },
-          ];
-    if (lines.some((line) => !accounts.some((account) => account.code === line.accountCode))) {
-      showToast('حساب بانکی یا حساب اسناد در کدینگ پیدا نشد؛ وصول ثبت نشد.');
-      return;
-    }
-
-    setCheques((prev) =>
-      prev.map((c) =>
-        c.id === id
-          ? { ...c, status: 'وصول‌شده (پاس‌شده)', clearanceDate: formatPersianDate() }
-          : c
-      )
-    );
-
-    appendGLEntries(
-      lines.map((line) => ({
-        postingDate: formatPersianDate(),
-        accountCode: line.accountCode,
-        accountName:
-          accounts.find((account) => account.code === line.accountCode)?.name ||
-          line.accountCode,
-        partyType: target.type === 'دریافتنی از مشتری' ? 'مشتری' : 'تامین‌کننده',
-        partyName: target.partyName,
-        debit: line.debit,
-        credit: line.credit,
-        voucherType: 'Cheque Clearance',
-        voucherNo: target.sayadiNo,
-        costCenter: 'فروشگاه و شوروم شعبه الهیه',
-        branchDimension: 'شعبه مرکزی تهران',
-        remarks: `وصول چک صیادی ${target.sayadiNo} از طریق بانک ملت`,
-      }))
-    );
-    setAccounts((prev) => postDoubleEntryToAccounts(prev, lines));
-    showToast(`چک صیادی ${target.sayadiNo} پاس شد و سند انتقال به بانک ملت در دفتر کل ثبت گردید.`);
-  };
-
-  // =========================================================================
-  // 5. POS & WEBSHOP CHECKOUT HANDLERS (NO TAX)
-  // =========================================================================
-  const handleCompletePosSale = (
-    sales: {
-      cartItems: { sku: string; name: string; qty: number; unitPrice: number }[];
-      netTotal: number;
-      customerName: string;
-    }[]
-  ): boolean => {
-    if (sales.length === 0) return false;
-
-    let updatedInventory = inventoryItems;
-    const invoices: SalesInvoiceRecord[] = [];
-    const glEntriesToAppend: Omit<GLEntryRecord, 'id'>[] = [];
-    const accountingLines: { accountCode: string; debit: number; credit: number }[] = [];
-    const totalRevenueByCostCenter = new Map<string, number>();
-    const accountNames = new Map(accounts.map((account) => [account.code, account.name]));
-    const now = Date.now();
-
-    for (const [index, sale] of sales.entries()) {
-      const inactiveItem = sale.cartItems.find((saleItem) =>
-        updatedInventory.some(
-          (stockItem) => stockItem.sku === saleItem.sku && stockItem.isActive === false
-        )
-      );
-      if (inactiveItem) {
-        showToast(`کالای ${inactiveItem.sku} غیرفعال است و در فروش جدید قابل استفاده نیست.`);
-        return false;
-      }
-      if (
-        !Number.isFinite(sale.netTotal) ||
-        sale.netTotal < 0 ||
-        sale.cartItems.length === 0 ||
-        sale.cartItems.some(
-          (item) =>
-            !Number.isFinite(item.qty) ||
-            item.qty <= 0 ||
-            !updatedInventory.some(
-              (stockItem) => stockItem.sku === item.sku && stockItem.isActive !== false
-            )
-        )
-      ) {
-        showToast('اطلاعات فیش معتبر نیست؛ فروش ثبت نشد.');
-        return false;
-      }
-
-      const deduction = deductStockWithBundles(
-        updatedInventory,
-        sale.cartItems.map((item) => ({ sku: item.sku, qty: item.qty }))
-      );
-      if (deduction.insufficientStockError) {
-        showToast(deduction.insufficientStockError);
-        return false;
-      }
-      updatedInventory = deduction.updatedInventory;
-
-      const invoiceNo = `POS-${getPersianYear()}-${String(210 + salesInvoices.length + index).padStart(4, '0')}`;
-      const invoice: SalesInvoiceRecord = {
-        id: `pos-${now}-${index}`,
-        invoiceNo,
-        docstatus: 1,
-        customerName: sale.customerName,
-        date: formatPersianDate(),
-        dueDate: formatPersianDate(),
-        branchDimension: 'شعبه الهیه',
-        costCenter: 'فروشگاه و شوروم شعبه الهیه',
-        channelDimension: 'صندوق فروشگاهی',
-        paymentTermsTemplate: 'تسویه آنی کارتخوان',
-        updateStock: true,
-        isSubscription: false,
-        status: 'پرداخت‌شده',
-        totalAmount: sale.netTotal,
-        paidAmount: sale.netTotal,
-        cogsAmount: deduction.totalCogs,
-        itemsSummary: sale.cartItems.map((item) => `${item.qty}× ${item.name}`).join(' + '),
-      };
-      invoices.push(invoice);
-      totalRevenueByCostCenter.set(
-        invoice.costCenter!,
-        (totalRevenueByCostCenter.get(invoice.costCenter!) || 0) + invoice.totalAmount
-      );
-
-      const lines = [
-        { accountCode: '110102', debit: sale.netTotal, credit: 0 },
-        { accountCode: '4101', debit: 0, credit: sale.netTotal },
-        { accountCode: '5101', debit: deduction.totalCogs, credit: 0 },
-        { accountCode: '1104', debit: 0, credit: deduction.totalCogs },
-      ];
-      accountingLines.push(...lines);
-      glEntriesToAppend.push(
-        ...lines.map((line) => ({
-          postingDate: invoice.date,
-          accountCode: line.accountCode,
-          accountName: accountNames.get(line.accountCode) || line.accountCode,
-          partyType: 'مشتری' as const,
-          partyName: sale.customerName,
-          debit: line.debit,
-          credit: line.credit,
-          voucherType: 'POS Invoice' as const,
-          voucherNo: invoiceNo,
-          costCenter: invoice.costCenter!,
-          branchDimension: invoice.branchDimension,
-          remarks: `ثبت فیش صندوق ${invoiceNo}`,
-        }))
-      );
-    }
-
-    setInventoryItems(updatedInventory);
-    setSalesInvoices((prev) => [...invoices, ...prev]);
-    setAccounts((prev) => postDoubleEntryToAccounts(prev, accountingLines));
-    appendGLEntries(glEntriesToAppend);
-    setCostCenters((prev) =>
-      prev.map((center) => ({
-        ...center,
-        revenueGenerated:
-          center.revenueGenerated + (totalRevenueByCostCenter.get(center.name) || 0),
-      }))
-    );
-    setAuditLogs((prev) => [
-      ...invoices.map((invoice, index) => ({
-        id: `aud-${now}-${index}`,
-        timestamp: '۱۴۰۴/۰۸/۰۲ — اکنون',
-        user: 'کاربر فعال',
-        role: formatRoleName(activeRole),
-        docType: 'فیش صندوق',
-        docId: invoice.invoiceNo,
-        fieldChanged: 'وضعیت سند',
-        oldValue: '—',
-        newValue: 'ثبت قطعی',
-      })),
-      ...prev,
-    ]);
-
-    showToast(
-      `${invoices.length} فیش صندوق ثبت شد؛ موجودی، دفتر کل و تاریخچه تغییرات به‌روز شدند.`
-    );
-    return true;
-  };
-
-  const handleWebshopOrderCheckout = (item: InventoryItemRecord) => {
-    handleCompletePosSale(
+  const [crmLeads, setCrmLeads] = usePersistentArrayState<CrmLeadRecord>(
+    'farapay.v1.crm-leads',
+    INITIAL_CRM_LEADS
+  );
+  const [calendarEvents, setCalendarEvents] =
+    usePersistentArrayState<OperationalCalendarEvent>(
+      'farapay.v4.calendar-events',
       [
         {
-          cartItems: [{ sku: item.sku, name: item.name, qty: 1, unitPrice: item.retailPrice }],
-          netTotal: item.retailPrice,
-          customerName: 'مشتری آنلاین وب‌شاپ',
+          id: 'ev-init-1',
+          title: 'انبارگردانی هفتگی ویترین و شارژ سالت‌های پرفروش',
+          date: '۱۴۰۴/۰۸/۱۵',
+          time: '11:00',
+          category: 'task',
+          isCompleted: false,
+          notes: 'انتقال از انبار مرکزی به ویترین مغازه',
         },
       ]
     );
-  };
-
-  // =========================================================================
-  // NAVIGATION & FRAPPE DESK WORKSPACE DEFINITIONS (PRUNED)
-  // =========================================================================
-  const sidebarWorkspaces: {
-    id: WorkspaceId;
-    label: string;
-    icon: React.ComponentType<{ className?: string }>;
-  }[] = [
-    { id: 'home', label: 'میزکار', icon: Home },
-    { id: 'accounting', label: 'حسابداری', icon: Calculator },
-    { id: 'selling', label: 'فروش', icon: ShoppingCart },
-    { id: 'pos', label: 'صندوق فروشگاهی', icon: Store },
-    { id: 'crm', label: 'ارتباط با مشتری', icon: Users },
-    { id: 'stock', label: 'انبار و کالا', icon: Package },
-    { id: 'webshop', label: 'وبسایت و فروشگاه اینترنتی', icon: Globe },
-    { id: 'settings', label: 'تنظیمات و هسته سیستم', icon: Settings },
-  ];
-
-  const openWorkspaceWithTab = (ws: WorkspaceId, accTab?: AccountingSubTab) => {
-    if (accTab) {
-      setAccountingInitialTab(accTab);
-    }
-    setActiveWorkspace(ws);
-    setShowAwesomebar(false);
-  };
-
-  const awesomebarCommands = [
-    { title: 'صدور فاکتور فروش چندردیفه جدید', category: 'فروش و حسابداری', action: () => openWorkspaceWithTab('accounting', 'sales_invoice') },
-    { title: 'ثبت فاکتور خرید و هزینه گمرک (حساب ۲۱۰۴)', category: 'خرید و حسابداری', action: () => openWorkspaceWithTab('accounting', 'purchase_invoice') },
-    { title: 'ثبت سند روزنامه دوبل', category: 'حسابداری', action: () => openWorkspaceWithTab('accounting', 'journal') },
-    { title: 'مشاهده تراز آزمایشی ۶ ستونی و دفتر کل', category: 'گزارش‌های مالی', action: () => openWorkspaceWithTab('accounting', 'gl_trial') },
-    { title: 'درخت حساب‌ها', category: 'حسابداری', action: () => openWorkspaceWithTab('accounting', 'coa') },
-    { title: 'خزانه‌داری، چک صیادی و تسعیر ارز', category: 'خزانه‌داری', action: () => openWorkspaceWithTab('accounting', 'payment_cheques') },
-    { title: 'باز کردن صندوق فروشگاهی لمسی', category: 'فروش حضوری', action: () => openWorkspaceWithTab('pos') },
-    { title: 'انبار، کاردکس کالا و درخواست شارژ کالا', category: 'انبار و کالا', action: () => openWorkspaceWithTab('stock') },
-    { title: 'قیف سرنخ‌ها و فرصت‌های فروش', category: 'ارتباط با مشتری', action: () => openWorkspaceWithTab('crm') },
-    { title: 'فروشگاه اینترنتی و پورتال مشتریان', category: 'وبسایت و فروشگاه اینترنتی', action: () => openWorkspaceWithTab('webshop') },
-    { title: 'تنظیمات هسته، گزارش‌ساز، اکسل و دسترسی‌ها', category: 'تنظیمات سیستم', action: () => openWorkspaceWithTab('settings') },
-  ];
-
-  const filteredCommands = awesomebarCommands.filter(
-    (c) =>
-      c.title.includes(awesomeQuery) ||
-      c.category.includes(awesomeQuery)
-  );
-
-  const dashboardMetrics = calculateSalesDashboardMetrics(salesInvoices, inventoryItems);
-  const dashboardCards = [
-    {
-      label: 'درآمد دوره',
-      value: dashboardMetrics.totalSales,
-      detail: `${dashboardMetrics.postedInvoiceCount} فاکتور قطعی، شامل آرشیو تاریخی`,
-    },
-    {
-      label: 'فروش کل',
-      value: dashboardMetrics.totalSales,
-      detail: 'جمع مبلغ فاکتورهای دارای وضعیت ثبت قطعی',
-    },
-    {
-      label: 'مجموع وصولی‌های فاکتور',
-      value: dashboardMetrics.cashReceived,
-      detail: 'جمع پرداخت درج‌شده روی فاکتورها؛ نه مانده فعلی صندوق و بانک',
-    },
-    {
-      label: 'مطالبات تاریخی',
-      value: dashboardMetrics.receivables,
-      detail: 'فروش قطعی منهای دریافتی درج‌شده روی فاکتورها',
-    },
-    {
-      label: 'سود برآوردی دوره',
-      value: dashboardMetrics.estimatedProfit,
-      detail: [
-        dashboardMetrics.estimatedCostLineCount > 0
-          ? `بهای ${dashboardMetrics.estimatedCostLineCount} ردیف با فرض ۷۵٪ مبلغ فروش تخمین زده شده`
-          : 'بهای ردیف‌ها از نرخ‌های ثبت‌شده محاسبه شده',
-        dashboardMetrics.missingCostLineCount > 0
-          ? `بهای ${dashboardMetrics.missingCostLineCount} ردیف هنوز نامشخص است`
-          : 'سود تاریخی به‌دلیل نبود بهای خرید واقعی قطعی نیست',
-      ].join('؛ '),
-    },
-    {
-      label: 'ارزش موجودی انبار',
-      value: dashboardMetrics.inventoryValue,
-      detail: 'مجموع تعداد موجودی × بهای ارزش‌گذاری ثبت‌شده',
-    },
-    {
-      label: 'دارایی محاسباتی',
-      value: dashboardMetrics.estimatedAssets,
-      detail: 'ارزش موجودی + دریافتی تاریخی + مطالبات تاریخی؛ نه ترازنامه',
-    },
-    {
-      label: 'گردش دفتر کل',
-      value: glEntries.length,
-      detail: 'آرتیکل ثبت‌شده؛ فاکتورهای آرشیوی در دفتر کل ثبت نشده‌اند',
-      isCount: true,
-    },
-  ];
-  const currentWorkspaceObj =
-    sidebarWorkspaces.find((w) => w.id === activeWorkspace) || sidebarWorkspaces[0];
-
-  const handleExportFullDatabase = () => {
-    const dataStr = JSON.stringify(
-      {
-        company: 'سامانه جامع برنامه‌ریزی منابع سازمانی امکان',
-        fiscalYear: activeFiscalYear,
-        accounts,
-        glEntries,
-        salesInvoices,
-        purchaseInvoices,
-        inventoryItems,
-      },
-      null,
-      2
+  const [customerWishlist, setCustomerWishlist] =
+    usePersistentArrayState<CustomerWishlistRecord>(
+      'farapay.v4.customer-wishlist',
+      [
+        {
+          id: 'wish-init-1',
+          customerName: 'کیوان رضایی',
+          customerPhone: '09123456789',
+          requestedItemName: 'سالت ویگاد بمب انبه یخ 25mg',
+          category: 'جویس و سالت',
+          flavorOrSpec: 'نیکوتین ۲۵ میلی‌گرم',
+          requestedDate: '۱۴۰۴/۰۸/۱۰',
+          promiseDate: '۱۴۰۴/۰۸/۱۸',
+          status: 'در انتظار تامین',
+          notes: 'مشتری ثابت مغازه — به محض رسیدن بار تماس گرفته شود',
+        },
+      ]
     );
-    const blob = new Blob([dataStr], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'cloudy-shop-data-export.json';
-    a.click();
-    URL.revokeObjectURL(url);
-    showToast('نسخه پشتیبان کامل پایگاه داده با موفقیت دانلود شد.');
+  const [auditLogs, setAuditLogs] = usePersistentArrayState<AuditLogRecord>(
+    'farapay.v1.audit-logs',
+    INITIAL_AUDIT_LOGS
+  );
+  const [masterOptions, setMasterOptions] = useState<MasterOptionsRegistry>(() => {
+    try {
+      const raw = window.localStorage.getItem('farapay.v4.master-options');
+      return raw ? JSON.parse(raw) : INITIAL_MASTER_OPTIONS;
+    } catch {
+      return INITIAL_MASTER_OPTIONS;
+    }
+  });
+
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Bidirectional Backup Snapshots (Undo / Redo without deleting latest snapshot)
+  const [backupSnapshots, setBackupSnapshots] = useState<SystemBackupSnapshot[]>([]);
+  const [currentSnapshotIndex, setCurrentSnapshotIndex] = useState<number>(-1);
+
+  const showToast = useCallback((msg: string) => {
+    setToastMessage(msg);
+  }, []);
+
+  // Ensure Cloudy Shop Inventory is placed in Central External warehouse & COA is synced
+  useEffect(() => {
+    if (window.localStorage.getItem(CLOUDY_SHOP_V4_KEY) === '1') return;
+    const normalized = normalizeCloudyShopInventory(
+      inventoryItems.length > 0 ? inventoryItems : CLOUDY_SHOP_INVENTORY
+    );
+    const totalCentralValuation = normalized.reduce(
+      (sum, item) => sum + item.stockQty * (item.valuationRate || 0),
+      0
+    );
+
+    const syncedAccounts = INITIAL_ACCOUNTS.map((acc) => {
+      if (acc.code === '1000' || acc.code === '1100' || acc.code === '1104' || acc.code === '110403') {
+        return { ...acc, balance: totalCentralValuation };
+      }
+      if (acc.code === '3000' || acc.code === '3100' || acc.code === '3101') {
+        return { ...acc, balance: totalCentralValuation };
+      }
+      return acc;
+    });
+
+    setInventoryItems(normalized);
+    setAccounts(syncedAccounts);
+    setShareholders(INITIAL_SHAREHOLDERS);
+    setWarehouses(INITIAL_WAREHOUSES);
+    window.localStorage.setItem(CLOUDY_SHOP_V4_KEY, '1');
+  }, [inventoryItems, setAccounts, setInventoryItems, setShareholders, setWarehouses]);
+
+  // Calculate Initial 50/50 Capital Baseline from Cloudy Shop Inventory
+  const initialInventoryCapitalBaseline = useMemo(() => {
+    return CLOUDY_SHOP_INVENTORY.reduce(
+      (sum, item) => sum + item.stockQty * (item.valuationRate || 0),
+      0
+    );
+  }, []);
+
+  // Save a Backup Snapshot
+  const handleCreateSnapshot = (customLabel?: string) => {
+    const snap: SystemBackupSnapshot = {
+      id: `snap-${Date.now()}`,
+      timestamp: new Date().toLocaleTimeString('fa-IR'),
+      label: customLabel || `بکاپ لحظه‌ای (${backupSnapshots.length + 1})`,
+      accounts: structuredClone(accounts),
+      glEntries: structuredClone(glEntries),
+      journalEntries: structuredClone(journalEntries),
+      salesInvoices: structuredClone(salesInvoices),
+      purchaseInvoices: structuredClone(purchaseInvoices),
+      inventoryItems: structuredClone(inventoryItems),
+      customerContacts: structuredClone(customerContacts),
+      shareholders: structuredClone(shareholders),
+    };
+    setBackupSnapshots((prev) => {
+      const next = [...prev, snap];
+      setCurrentSnapshotIndex(next.length - 1);
+      return next;
+    });
+    showToast(`نقطه بازیابی «${snap.label}» ذخیره شد (امکان عقبگرد و جلوگرد بدون حذف).`);
   };
+
+  const applySnapshotAtIndex = (idx: number) => {
+    const snap = backupSnapshots[idx];
+    if (!snap) return;
+    setAccounts(snap.accounts);
+    setGlEntries(snap.glEntries);
+    setJournalEntries(snap.journalEntries);
+    setSalesInvoices(snap.salesInvoices);
+    setPurchaseInvoices(snap.purchaseInvoices);
+    setInventoryItems(snap.inventoryItems);
+    setCustomerContacts(snap.customerContacts);
+    setShareholders(snap.shareholders);
+    setCurrentSnapshotIndex(idx);
+  };
+
+  const handleUndoSnapshot = () => {
+    if (backupSnapshots.length === 0) {
+      showToast('ابتدا با دکمه «ثبت بکاپ» یک نقطه بازیابی ذخیره کنید.');
+      return;
+    }
+    const targetIdx = Math.max(0, currentSnapshotIndex - 1);
+    applySnapshotAtIndex(targetIdx);
+    showToast(
+      `عقبگرد (Rollback) به «${backupSnapshots[targetIdx].label}» انجام شد؛ آخرین بکاپ حذف نشد و قابل جلوگرد است.`
+    );
+  };
+
+  const handleRedoSnapshot = () => {
+    if (
+      backupSnapshots.length === 0 ||
+      currentSnapshotIndex >= backupSnapshots.length - 1
+    ) {
+      showToast('شما در آخرین نسخه بکاپ قرار دارید.');
+      return;
+    }
+    const targetIdx = currentSnapshotIndex + 1;
+    applySnapshotAtIndex(targetIdx);
+    showToast(`جلوگرد (Roll-Forward) به «${backupSnapshots[targetIdx].label}» انجام شد.`);
+  };
+
+  const handleAddMasterOption = (
+    category: keyof MasterOptionsRegistry,
+    newValue: string
+  ) => {
+    const trimmed = newValue.trim();
+    if (!trimmed) return;
+    setMasterOptions((prev) => {
+      if (prev[category].includes(trimmed)) return prev;
+      const updated = {
+        ...prev,
+        [category]: [...prev[category], trimmed],
+      };
+      window.localStorage.setItem('farapay.v4.master-options', JSON.stringify(updated));
+      return updated;
+    });
+    showToast(`مقدار «${trimmed}» به لیست جامع اضافه شد.`);
+  };
+
+  // POS Checkout Handler (handles Normal/Festival/Reseller, Bottle/Decant ml, Services, 3 Liquidity Accounts, Credit Receivables)
+  const handleCompletePosCheckout = (payload: PosCheckoutPayload): boolean => {
+    let updatedInventory = [...inventoryItems];
+    let vapeCogs = 0;
+    let pcCogs = 0;
+    let vapeRev = 0;
+    let pcRev = 0;
+
+    for (const line of payload.cartLines) {
+      const idx = updatedInventory.findIndex((i) => i.sku === line.sku);
+      if (idx === -1) continue;
+      const item = updatedInventory[idx];
+
+      if (line.isDecantMl) {
+        const decantRes = deductDecantMlFromBottle({
+          stockBottles: item.stockQty,
+          openBottleRemainingMl: item.openBottleRemainingMl ?? 0,
+          bottleVolumeMl: item.bottleVolumeMl || item.liquidVolumeMl || 60,
+          soldMl: line.qty,
+          bottleValuationRate: item.valuationRate,
+        });
+        if (!decantRes.success) {
+          showToast(decantRes.errorMessage || 'موجودی میلی‌لیتری بطری کافی نیست.');
+          return false;
+        }
+        const bottlesOpened = Math.max(0, item.stockQty - decantRes.newStockBottles);
+        updatedInventory[idx] = {
+          ...item,
+          stockQty: decantRes.newStockBottles,
+          openBottleRemainingMl: decantRes.newOpenBottleRemainingMl,
+          totalOutQty: (item.totalOutQty ?? 0) + bottlesOpened,
+        };
+        vapeCogs += decantRes.lineCogs;
+        vapeRev += line.qty * line.finalManualUnitPrice;
+      } else {
+        if (item.stockQty < line.qty) {
+          showToast(`موجودی کالای «${item.name}» کافی نیست.`);
+          return false;
+        }
+        const whKey = line.warehouseKey || 'vitrine';
+        const currWhStock = { ...(item.warehouseStock || {}) };
+        currWhStock[whKey] = Math.max(0, (currWhStock[whKey] ?? item.stockQty) - line.qty);
+
+        if (item.sector === 'pc' && item.fifoLayers && item.fifoLayers.length > 0) {
+          const fifo = consumeFifoLayers(
+            item.fifoLayers,
+            line.qty,
+            item.valuationRate || 0
+          );
+          pcCogs += fifo.totalCogs;
+          pcRev += line.qty * line.finalManualUnitPrice;
+          updatedInventory[idx] = {
+            ...item,
+            stockQty: item.stockQty - line.qty,
+            warehouseStock: currWhStock,
+            totalOutQty: (item.totalOutQty ?? 0) + line.qty,
+            fifoLayers: fifo.remainingLayers,
+            lastSoldDate: formatPersianDate(new Date()),
+            daysInStock: 0,
+          };
+        } else {
+          const lineCogs = line.qty * (item.valuationRate || 0);
+          if (item.sector === 'pc') {
+            pcCogs += lineCogs;
+            pcRev += line.qty * line.finalManualUnitPrice;
+          } else {
+            vapeCogs += lineCogs;
+            vapeRev += line.qty * line.finalManualUnitPrice;
+          }
+          updatedInventory[idx] = {
+            ...item,
+            stockQty: item.stockQty - line.qty,
+            warehouseStock: currWhStock,
+            totalOutQty: (item.totalOutQty ?? 0) + line.qty,
+            lastSoldDate: formatPersianDate(new Date()),
+            daysInStock: 0,
+          };
+        }
+      }
+    }
+
+    // Deduct service consumables if linked
+    let serviceConsumableCogs = 0;
+    for (const sLine of payload.serviceLines) {
+      if (sLine.linkedConsumableSku && (sLine.linkedConsumableQty || 0) > 0) {
+        const cIdx = updatedInventory.findIndex((i) => i.sku === sLine.linkedConsumableSku);
+        if (cIdx !== -1) {
+          const cItem = updatedInventory[cIdx];
+          const deductQty = sLine.linkedConsumableQty || 1;
+          updatedInventory[cIdx] = {
+            ...cItem,
+            stockQty: Math.max(0, cItem.stockQty - deductQty),
+            totalOutQty: (cItem.totalOutQty ?? 0) + deductQty,
+          };
+          serviceConsumableCogs += deductQty * (cItem.valuationRate || 0);
+        }
+      }
+    }
+
+    const totalCogs = vapeCogs + pcCogs + serviceConsumableCogs;
+    const serviceRev = payload.serviceLines.reduce((s, l) => s + l.feeAmount, 0);
+    const productRev = Math.max(0, payload.netTotal - serviceRev);
+    const invNo = `POS-${getPersianYear()}-${String(1001 + salesInvoices.length).padStart(4, '0')}`;
+    const todayStr = formatPersianDate(new Date());
+
+    const newInvoice: SalesInvoiceRecord = {
+      id: `sinv-${Date.now()}`,
+      invoiceNo: invNo,
+      docstatus: 1,
+      customerName: payload.customerName || 'مشتری حضوری',
+      customerPhone: payload.customerPhone,
+      referralName: payload.referralName,
+      pricingMode: payload.pricingMode,
+      paymentAccountCode: payload.paymentAccountCode,
+      paymentMethodLabel: payload.paymentMethodLabel,
+      date: todayStr,
+      dueDate: todayStr,
+      branchDimension: defaultBranch,
+      channelDimension: 'فروش حضوری POS',
+      paymentTermsTemplate:
+        payload.creditReceivableAmount > 0 ? 'نسیه (بدهکار)' : 'تسویه نقد/کارت در لحظه',
+      updateStock: true,
+      isSubscription: false,
+      status: payload.creditReceivableAmount > 0 ? 'نسیه (بدهکار)' : 'پرداخت‌شده',
+      totalAmount: payload.netTotal,
+      paidAmount: payload.paidAmount,
+      cogsAmount: totalCogs,
+      vapeCogsAmount: vapeCogs + serviceConsumableCogs,
+      pcCogsAmount: pcCogs,
+      vapeRevenueAmount: vapeRev + serviceRev,
+      pcRevenueAmount: pcRev,
+      itemsSummary: [
+        ...payload.cartLines.map((l) => `${l.qty} ${l.uom} ${l.name}`),
+        ...payload.serviceLines.map((s) => `خدمات: ${s.serviceTitle}`),
+      ].join(' + '),
+      lines: payload.cartLines.map((l, idx) => ({
+        id: `line-${Date.now()}-${idx}`,
+        sku: l.sku,
+        itemName: l.name,
+        uom: l.uom,
+        qty: l.qty,
+        unitPrice: l.finalManualUnitPrice,
+        discountPercent: 0,
+        netLineAmount: l.qty * l.finalManualUnitPrice,
+        valuationRate: l.unitValuationCost,
+        isDecantMl: l.isDecantMl,
+        sector: l.sector,
+        warehouseKey: l.warehouseKey,
+      })),
+      serviceLines: payload.serviceLines,
+    };
+
+    // Double-entry lines
+    const ledgerLines: { accountCode: string; debit: number; credit: number }[] = [];
+    if (payload.paidAmount > 0) {
+      ledgerLines.push({
+        accountCode: payload.paymentAccountCode,
+        debit: payload.paidAmount,
+        credit: 0,
+      });
+    }
+    if (payload.creditReceivableAmount > 0) {
+      ledgerLines.push({
+        accountCode: '1102',
+        debit: payload.creditReceivableAmount,
+        credit: 0,
+      });
+    }
+    if (productRev > 0) {
+      ledgerLines.push({
+        accountCode: '4101',
+        debit: 0,
+        credit: productRev,
+      });
+    }
+    if (serviceRev > 0) {
+      ledgerLines.push({
+        accountCode: '4105',
+        debit: 0,
+        credit: serviceRev,
+      });
+    }
+    if (totalCogs > 0) {
+      ledgerLines.push(
+        { accountCode: '5101', debit: totalCogs, credit: 0 },
+        { accountCode: '110401', debit: 0, credit: totalCogs }
+      );
+    }
+
+    setAccounts((curr) => postDoubleEntryToAccounts(curr, ledgerLines));
+    setInventoryItems(updatedInventory);
+    setSalesInvoices((prev) => [newInvoice, ...prev]);
+
+    // Update Customer Contact Debit Balance if Credit Sale
+    if (payload.creditReceivableAmount > 0 && payload.customerName) {
+      setCustomerContacts((prev) =>
+        prev.map((c) =>
+          c.fullName === payload.customerName
+            ? {
+                ...c,
+                debitBalance: (c.debitBalance ?? 0) + payload.creditReceivableAmount,
+              }
+            : c
+        )
+      );
+    }
+
+    showToast(`فاکتور فروش «${invNo}» با موفقیت در صندوق و دفتر کل ثبت شد.`);
+    return true;
+  };
+
+  // POS Return 3-Option Handler
+  const handleProcessPosReturn = (payload: PosReturnPayload): boolean => {
+    const inv = salesInvoices.find((s) => s.id === payload.sourceInvoiceId);
+    if (!inv || inv.docstatus === 2) {
+      showToast('فاکتور مبدا برای مرجوعی معتبر نیست.');
+      return false;
+    }
+
+    // Restore returned items to stock
+    if (inv.lines && inv.lines.length > 0) {
+      const restored = restoreStockWithBundles(
+        inventoryItems,
+        inv.lines.map((l) => ({ sku: l.sku, qty: l.qty }))
+      );
+      setInventoryItems(restored);
+    }
+
+    const returnAmount = inv.totalAmount;
+    const cogsReverse = inv.cogsAmount || 0;
+    const ledgerLines: { accountCode: string; debit: number; credit: number }[] = [
+      { accountCode: '4101', debit: returnAmount, credit: 0 },
+    ];
+
+    if (payload.resolutionMode === 'credit_balance') {
+      ledgerLines.push({ accountCode: '2102', debit: 0, credit: returnAmount });
+      setCustomerContacts((prev) =>
+        prev.map((c) =>
+          c.fullName === inv.customerName
+            ? { ...c, creditBalance: (c.creditBalance ?? 0) + returnAmount }
+            : c
+        )
+      );
+    } else if (payload.resolutionMode === 'cash_refund') {
+      ledgerLines.push({
+        accountCode: payload.refundAccountCode || '110102',
+        debit: 0,
+        credit: returnAmount,
+      });
+    } else {
+      // Exchange item
+      ledgerLines.push({ accountCode: '2102', debit: 0, credit: returnAmount });
+    }
+
+    if (cogsReverse > 0) {
+      ledgerLines.push(
+        { accountCode: '110401', debit: cogsReverse, credit: 0 },
+        { accountCode: '5101', debit: 0, credit: cogsReverse }
+      );
+    }
+
+    setAccounts((curr) => postDoubleEntryToAccounts(curr, ledgerLines));
+    setSalesInvoices((prev) =>
+      prev.map((s) =>
+        s.id === inv.id
+          ? {
+              ...s,
+              status: 'مرجوعی (یادداشت بستانکاری)',
+              returnResolutionMode: payload.resolutionMode,
+            }
+          : s
+      )
+    );
+
+    showToast(
+      `مرجوعی فاکتور «${inv.invoiceNo}» با سناریوی انتخاب‌شده ثبت و کالا به انبار بازگردانده شد.`
+    );
+    return true;
+  };
+
+  // Void Sales Invoice (ابطال سند فروش بدون حذف فیزیکی)
+  const handleVoidSalesInvoice = (id: string) => {
+    const inv = salesInvoices.find((s) => s.id === id);
+    if (!inv || inv.docstatus === 2) return;
+
+    if (inv.lines && inv.lines.length > 0 && !inv.isHistoricalArchive) {
+      setInventoryItems((curr) =>
+        restoreStockWithBundles(
+          curr,
+          inv.lines!.map((l) => ({ sku: l.sku, qty: l.qty }))
+        )
+      );
+    }
+
+    const revLines: { accountCode: string; debit: number; credit: number }[] = [
+      { accountCode: '4101', debit: inv.totalAmount, credit: 0 },
+    ];
+    if (inv.paidAmount > 0) {
+      revLines.push({
+        accountCode: inv.paymentAccountCode || '110101',
+        debit: 0,
+        credit: inv.paidAmount,
+      });
+    }
+    const unpaid = Math.max(0, inv.totalAmount - inv.paidAmount);
+    if (unpaid > 0) {
+      revLines.push({ accountCode: '1102', debit: 0, credit: unpaid });
+    }
+    if ((inv.cogsAmount || 0) > 0) {
+      revLines.push(
+        { accountCode: '110401', debit: inv.cogsAmount!, credit: 0 },
+        { accountCode: '5101', debit: 0, credit: inv.cogsAmount! }
+      );
+    }
+
+    setAccounts((curr) => postDoubleEntryToAccounts(curr, revLines));
+    setSalesInvoices((prev) =>
+      prev.map((s) =>
+        s.id === id ? { ...s, docstatus: 2, status: 'ابطال‌شده' } : s
+      )
+    );
+    showToast(
+      `فاکتور فروش «${inv.invoiceNo}» باطل شد (Void)؛ سند معکوس ثبت و موجودی به انبار بازگشت.`
+    );
+  };
+
+  // Stage-1 Purchase Creation
+  const handleCreatePurchaseInvoice = (pinv: PurchaseInvoiceRecord): boolean => {
+    const paid = pinv.paidAmount ?? 0;
+    const unpaid = Math.max(0, pinv.totalAmount - paid);
+    const ledgerLines: { accountCode: string; debit: number; credit: number }[] = [
+      { accountCode: '110403', debit: pinv.totalAmount, credit: 0 },
+    ];
+    if (paid > 0) {
+      ledgerLines.push({
+        accountCode: pinv.paymentAccountCode || '110102',
+        debit: 0,
+        credit: paid,
+      });
+    }
+    if (unpaid > 0) {
+      ledgerLines.push({ accountCode: '2101', debit: 0, credit: unpaid });
+      // Update supplier creditBalance in CRM
+      setCustomerContacts((prev) =>
+        prev.map((c) =>
+          c.fullName === pinv.supplierName
+            ? { ...c, creditBalance: (c.creditBalance ?? 0) + unpaid }
+            : c
+        )
+      );
+    }
+
+    setAccounts((curr) => postDoubleEntryToAccounts(curr, ledgerLines));
+    setPurchaseInvoices((prev) => [pinv, ...prev]);
+    showToast(
+      `فاکتور خرید «${pinv.billNo}» ثبت شد. اکنون می‌توانید در بخش انبارگردانی طعم و رنگ‌ها را تفکیک کنید.`
+    );
+    return true;
+  };
+
+  // Void Purchase Invoice
+  const handleVoidPurchaseInvoice = (id: string) => {
+    const pinv = purchaseInvoices.find((p) => p.id === id);
+    if (!pinv || pinv.docstatus === 2) return;
+    const paid = pinv.paidAmount ?? 0;
+    const unpaid = Math.max(0, pinv.totalAmount - paid);
+    const revLines: { accountCode: string; debit: number; credit: number }[] = [
+      { accountCode: '110403', debit: 0, credit: pinv.totalAmount },
+    ];
+    if (paid > 0) {
+      revLines.push({
+        accountCode: pinv.paymentAccountCode || '110102',
+        debit: paid,
+        credit: 0,
+      });
+    }
+    if (unpaid > 0) {
+      revLines.push({ accountCode: '2101', debit: unpaid, credit: 0 });
+    }
+    setAccounts((curr) => postDoubleEntryToAccounts(curr, revLines));
+    setPurchaseInvoices((prev) =>
+      prev.map((p) =>
+        p.id === id ? { ...p, docstatus: 2, status: 'ابطال‌شده' } : p
+      )
+    );
+    showToast(`فاکتور خرید «${pinv.billNo}» باطل شد (Void) و حساب‌ها به حالت قبل برگشت.`);
+  };
+
+  // Stage-2 SKU Breakdown Completion
+  const handleCompleteSkuBreakdown = (
+    purchaseId: string | null,
+    allocatedItems: InventoryItemRecord[]
+  ) => {
+    setInventoryItems((curr) => {
+      const updated = [...curr];
+      for (const newItem of allocatedItems) {
+        const existingIdx = updated.findIndex((i) => i.sku === newItem.sku);
+        if (existingIdx !== -1) {
+          const ex = updated[existingIdx];
+          const newAvgRes = calculateMovingAverageValuation(
+            ex.stockQty,
+            ex.valuationRate,
+            newItem.stockQty,
+            newItem.valuationRate
+          );
+          const whStock = { ...(ex.warehouseStock || {}) };
+          const targetWh = Object.keys(newItem.warehouseStock || {})[0] || 'vitrine';
+          whStock[targetWh] = (whStock[targetWh] || 0) + newItem.stockQty;
+          updated[existingIdx] = {
+            ...ex,
+            stockQty: ex.stockQty + newItem.stockQty,
+            totalInQty: (ex.totalInQty ?? ex.stockQty) + newItem.stockQty,
+            valuationRate: newAvgRes.newValuationRate,
+            retailPrice: newItem.retailPrice || ex.retailPrice,
+            resellerPrice: newItem.resellerPrice || ex.resellerPrice,
+            warehouseStock: whStock,
+            fifoLayers:
+              ex.sector === 'pc'
+                ? [
+                    ...(ex.fifoLayers || []),
+                    {
+                      qty: newItem.stockQty,
+                      unitCost: newItem.valuationRate,
+                      date: formatPersianDate(new Date()),
+                    },
+                  ]
+                : ex.fifoLayers,
+          };
+        } else {
+          updated.unshift(newItem);
+        }
+      }
+      return updated;
+    });
+
+    if (purchaseId) {
+      setPurchaseInvoices((prev) =>
+        prev.map((p) =>
+          p.id === purchaseId
+            ? { ...p, skuBreakdownCompleted: true, deliveryStatus: 'رسیده' }
+            : p
+        )
+      );
+    }
+
+    showToast(
+      `تفکیک مرحله دوم (${allocatedItems.length} کد کالای SKU) با موفقیت در انبار ثبت شد.`
+    );
+  };
+
+  // Inter-warehouse Stock Transfer
+  const handleTransferWarehouseStock = (
+    sku: string,
+    fromWh: WarehouseKey,
+    toWh: WarehouseKey,
+    qty: number
+  ) => {
+    if (fromWh === toWh || qty <= 0) return;
+    setInventoryItems((prev) =>
+      prev.map((item) => {
+        if (item.sku !== sku) return item;
+        const wh = { ...(item.warehouseStock || {}) };
+        const avail = wh[fromWh] ?? 0;
+        if (avail < qty) return item;
+        wh[fromWh] = avail - qty;
+        wh[toWh] = (wh[toWh] ?? 0) + qty;
+        return { ...item, warehouseStock: wh };
+      })
+    );
+    showToast(`انتقال ${qty} عدد از کالای ${sku} بین انبارها انجام شد.`);
+  };
+
+  // Urgent Alerts for Home Launcher
+  const pendingBreakdownCount = purchaseInvoices.filter(
+    (p) => p.docstatus === 1 && !p.skuBreakdownCompleted
+  ).length;
+  const inTransitCount = purchaseInvoices.filter(
+    (p) => p.docstatus === 1 && p.deliveryStatus === 'در راه (هنوز نرسیده)'
+  ).length;
+  const unpaidSupplierBillsCount = purchaseInvoices.filter(
+    (p) => p.docstatus === 1 && p.totalAmount - (p.paidAmount ?? 0) > 0
+  ).length;
 
   return (
-    <div dir="rtl" className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans">
-      {/* Top Bar */}
-      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-xs border-b border-slate-200 h-16 px-3 md:px-4 lg:px-8 flex items-center justify-between gap-2 md:gap-4">
-        {/* Right: Brand + Breadcrumb */}
-        <div className="flex items-center gap-3 shrink-0">
+    <div
+      dir="rtl"
+      className={`min-h-screen font-sans transition-colors ${
+        darkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-100 text-slate-900'
+      }`}
+    >
+      {/* Clean Top Bar (Module 11 Specification) */}
+      <header
+        className={`sticky top-0 z-30 border-b px-4 lg:px-6 py-3 flex flex-wrap items-center justify-between gap-3 ${
+          darkMode
+            ? 'bg-slate-900/95 border-slate-800 text-white'
+            : 'bg-white/95 border-slate-200 text-slate-900'
+        } backdrop-blur-md`}
+      >
+        {/* Brand & Active Single-Branch Indicator */}
+        <div className="flex items-center gap-3">
           <button
             type="button"
             onClick={() => setActiveWorkspace('home')}
-            className="flex items-center gap-2.5 text-right group"
+            className="flex items-center gap-2.5 text-right"
           >
-            <div className="w-9 h-9 rounded-lg bg-slate-900 text-white flex items-center justify-center font-bold text-base">
-              ا
+            <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-black text-sm shadow-xs">
+              FP
             </div>
-            <span className="text-base font-bold text-slate-900 whitespace-nowrap">
-              امکان
-            </span>
+            <div>
+              <div className="text-sm font-black tracking-tight">
+                فراپِی ERP — ویپ‌شاپ و قطعات کامپیوتر
+              </div>
+              <div className="text-[11px] text-slate-500 font-semibold">
+                {defaultBranch}
+              </div>
+            </div>
           </button>
-
-          <ChevronLeft className="w-4 h-4 text-slate-300 hidden sm:block" />
-
-          <span className="text-sm font-semibold text-slate-700 hidden sm:inline-block whitespace-nowrap">
-            {currentWorkspaceObj.label}
-          </span>
         </div>
 
-        {/* Center: Command Search Bar (Ctrl+K) */}
-        <div className="flex-1 min-w-0 max-w-md">
+        {/* Global Search Bar */}
+        <div className="flex-1 max-w-md mx-2">
           <button
             type="button"
-            aria-label="جستجو در بخش‌ها، اسناد و گزارش‌ها"
-            onClick={() => setShowAwesomebar(true)}
-            className="w-full min-w-0 px-3.5 py-2 text-xs text-slate-500 bg-slate-100 hover:bg-slate-200/70 border border-slate-200/80 rounded-lg flex items-center justify-between transition-colors"
+            onClick={() => setShowAwesomebar((prev) => !prev)}
+            className={`w-full flex items-center justify-between px-3.5 py-2 rounded-xl border text-xs ${
+              darkMode
+                ? 'bg-slate-800 border-slate-700 text-slate-300'
+                : 'bg-slate-50 border-slate-200 text-slate-500 hover:border-slate-300'
+            }`}
           >
-            <span className="inline-flex min-w-0 items-center gap-2 truncate">
-              <Search className="w-4 h-4 text-slate-400 shrink-0" />
-              <span className="hidden sm:inline truncate">جستجو در بخش‌ها، اسناد و گزارش‌ها...</span>
+            <span className="flex items-center gap-2">
+              <Search className="w-4 h-4" />
+              <span>جستجوی سریع کالا، مخاطب یا ماژول...</span>
             </span>
-            <kbd className="hidden sm:block px-2 py-0.5 text-[11px] font-medium bg-white text-slate-600 rounded border border-slate-200 shrink-0">
-              جستجو
+            <kbd className="px-1.5 py-0.5 text-[10px] rounded bg-slate-200 text-slate-700 font-mono">
+              Ctrl+K
             </kbd>
           </button>
         </div>
 
-        {/* Left: Fiscal Year, Branch Selector & Role Selector */}
-        <div className="flex items-center gap-2.5 text-xs shrink-0">
-          <div className="hidden md:flex items-center gap-1.5 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200/80">
-            <Calendar className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-            <select
-              aria-label="انتخاب سال مالی"
-              value={activeFiscalYear}
-              onChange={(e) => setActiveFiscalYear(e.target.value)}
-              className="bg-transparent text-xs font-medium text-slate-700 focus:outline-none"
-            >
-              {fiscalYearOptions.map((year) => (
-                <option key={year} value={`سال مالی ${year}`}>
-                  سال مالی {year}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="hidden lg:flex items-center gap-1.5 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200/80">
-            <Building2 className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-            <select
-              aria-label="انتخاب شعبه فعال"
-              value={defaultBranch}
-              onChange={(e) => setDefaultBranch(e.target.value)}
-              className="bg-transparent text-xs font-medium text-slate-700 focus:outline-none"
-            >
-              <option value="همه شعب سازمان">همه شعب سازمان</option>
-              <option value="شعبه مرکزی تهران">شعبه مرکزی تهران</option>
-              <option value="شعبه الهیه">شعبه الهیه</option>
-              <option value="انبار مرکزی کهریزک">انبار مرکزی کهریزک</option>
-            </select>
-          </div>
-
-          <select
-            aria-label="انتخاب نقش کاربری"
-            value={activeRole}
-            onChange={(e) => setActiveRole(e.target.value as SystemRole)}
-            className="px-3 py-1.5 text-xs font-medium bg-slate-900 text-white rounded-lg focus:outline-none"
+        {/* Clean Top Right Action Controls: Theme Switch, Auto-Hide Privacy Eye, Bidirectional Snapshot Undo/Redo, User Profile */}
+        <div className="flex items-center gap-2">
+          {/* 1. Light / Dark Mode Switch */}
+          <button
+            type="button"
+            onClick={() => setDarkMode((prev) => !prev)}
+            className={`p-2 rounded-xl border text-xs font-bold transition-colors ${
+              darkMode
+                ? 'bg-slate-800 border-slate-700 text-amber-400 hover:bg-slate-700'
+                : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+            }`}
+            title={darkMode ? 'تغییر به تم روشن (Light Mode)' : 'تغییر به تم تیره (Dark Mode)'}
           >
-            <option value="ادمین کل (Super Admin)">نقش: مدیر کل سامانه</option>
-            <option value="مدیر مالی (Accounts Manager)">نقش: مدیر مالی</option>
-            <option value="سرپرست انبار (Stock Manager)">نقش: سرپرست انبار</option>
-            <option value="صندوقدار POS">نقش: صندوقدار</option>
-          </select>
+            {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+          </button>
+
+          {/* 2. Auto-Hide Privacy Mode Button (60s auto-lock) */}
+          <button
+            type="button"
+            onClick={() => setPrivacyMask((prev) => !prev)}
+            className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-bold transition-all ${
+              privacyMask
+                ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                : 'bg-amber-50 text-amber-900 border-amber-300'
+            }`}
+            title="مخفی‌سازی خودکار اعداد حساس (پس از ۶۰ ثانیه عدم فعالیت به صورت خودکار مخفی می‌شود)"
+          >
+            {privacyMask ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            <span>{privacyMask ? 'حریم خصوصی فعال (****)' : 'ارقام آشکار (قفل خودکار ۶۰ث)'}</span>
+          </button>
+
+          {/* 3. Bidirectional Backup Snapshot Controls (Save / Undo / Redo) */}
+          <div className="hidden sm:flex items-center gap-1 p-1 rounded-xl border border-slate-200 bg-slate-50 text-slate-700">
+            <button
+              type="button"
+              onClick={() => handleCreateSnapshot()}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-900 text-white text-[11px] font-bold hover:bg-slate-800"
+              title="ثبت نقطه بازیابی جدید (Snapshot)"
+            >
+              <Save className="w-3.5 h-3.5" />
+              <span>ثبت بکاپ ({backupSnapshots.length})</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleUndoSnapshot}
+              disabled={backupSnapshots.length === 0}
+              className="p-1.5 rounded-lg hover:bg-slate-200 disabled:opacity-40"
+              title="عقبگرد به بکاپ قبلی (Rollback بدون حذف آخرین بکاپ)"
+            >
+              <Undo2 className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={handleRedoSnapshot}
+              disabled={
+                backupSnapshots.length === 0 ||
+                currentSnapshotIndex >= backupSnapshots.length - 1
+              }
+              className="p-1.5 rounded-lg hover:bg-slate-200 disabled:opacity-40"
+              title="جلوگرد به آخرین بکاپ (Roll-Forward)"
+            >
+              <Redo2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {/* 4. User Profile Badge */}
+          <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-100 border border-slate-200 text-xs font-bold text-slate-800">
+            <ShieldCheck className="w-4 h-4 text-emerald-600" />
+            <span>مدیر فروشگاه</span>
+          </div>
         </div>
       </header>
 
-      {storageRecoveryIssues.length > 0 && (
-        <section className="mx-4 mt-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
-          <h2 className="font-bold">ذخیره‌ی محلی قابل خواندن نیست</h2>
-          <p className="mt-1">
-            داده‌ی مشکل‌دار بازنویسی نشده است. ابتدا از مقادیر خام نسخه‌ی پشتیبان بگیرید؛ سپس
-            می‌توانید فقط بخش‌های خراب را با داده‌ی اولیه جایگزین کنید. تغییرات جدید در آن بخش‌ها
-            تا زمان بازیابی/جایگزینی ذخیره نخواهند شد.
-          </p>
-          <button
-            type="button"
-            onClick={downloadCorruptedStorage}
-            className="mt-3 rounded-lg border border-amber-400 bg-white px-3 py-1.5 text-xs font-semibold hover:bg-amber-100"
-          >
-            دانلود نسخه‌ی بازیابی داده‌های خراب
-          </button>
-          <ul className="mt-3 space-y-2">
-            {storageRecoveryIssues.map((issue) => (
-              <li key={issue.key} className="flex flex-wrap items-center justify-between gap-2">
-                <span>{issue.error}</span>
+      {/* Awesomebar Quick Search Modal */}
+      {showAwesomebar && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-start justify-center pt-20 p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl w-full max-w-lg p-4 space-y-3 text-slate-900">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-black text-slate-700">
+                جستجوی سریع در ماژول‌ها و کالاهای کلودی شاپ
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowAwesomebar(false)}
+                className="text-xs font-bold text-slate-500 hover:text-slate-800"
+              >
+                بستن (Esc)
+              </button>
+            </div>
+            <input
+              type="text"
+              autoFocus
+              value={awesomeQuery}
+              onChange={(e) => setAwesomeQuery(e.target.value)}
+              placeholder="نام کالا، کد SKU یا نام بخش..."
+              className="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-xs"
+            />
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              {[
+                { id: 'pos', label: 'صندوق فروشگاهی (POS)' },
+                { id: 'stock', label: 'انبارگردانی و تفکیک SKU' },
+                { id: 'accounting', label: 'حسابداری، سهامداران و خرید' },
+                { id: 'analytics', label: 'آنالیز و آمار (BI)' },
+                { id: 'crm', label: 'باشگاه مشتریان و مخاطبین' },
+                { id: 'calendar', label: 'تقویم عملیاتی و Wishlist' },
+              ].map((m) => (
                 <button
+                  key={m.id}
                   type="button"
                   onClick={() => {
-                    if (
-                      window.confirm(
-                        `ذخیره‌ی خراب "${issue.key}" با داده‌ی اولیه جایگزین شود؟ ابتدا نسخه‌ی بازیابی را دانلود کنید.`
-                      )
-                    ) {
-                      issue.recover();
-                    }
+                    setActiveWorkspace(m.id as WorkspaceId);
+                    setShowAwesomebar(false);
                   }}
-                  className="rounded-lg border border-amber-400 bg-white px-3 py-1.5 text-xs font-semibold hover:bg-amber-100"
+                  className="p-2.5 rounded-xl border border-slate-200 text-right font-bold hover:bg-slate-50"
                 >
-                  جایگزینی این بخش با داده‌ی اولیه
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      {/* Main Layout */}
-      <div className="flex-1 max-w-[1600px] w-full mx-auto flex gap-6 p-4 lg:p-6 items-start">
-        {/* Sidebar Navigation */}
-        <aside className="w-64 shrink-0 hidden md:flex flex-col gap-1.5 bg-white p-3.5 rounded-xl border border-slate-200/90 sticky top-22">
-          <div className="px-3 py-1.5 text-xs font-semibold text-slate-400">
-            بخش‌های سامانه
-          </div>
-          {sidebarWorkspaces.map((ws) => {
-            const Icon = ws.icon;
-            const isActive = activeWorkspace === ws.id;
-            return (
-              <button
-                key={ws.id}
-                type="button"
-                onClick={() => {
-                  if (ws.id === 'selling') {
-                    openWorkspaceWithTab('selling', 'sales_invoice');
-                  } else if (ws.id === 'accounting') {
-                    openWorkspaceWithTab('accounting', 'coa');
-                  } else {
-                    setActiveWorkspace(ws.id);
-                  }
-                }}
-                className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm transition-colors ${
-                  isActive
-                    ? 'bg-slate-900 text-white font-semibold'
-                    : 'text-slate-700 font-medium hover:bg-slate-100'
-                }`}
-              >
-                <span className="inline-flex items-center gap-3">
-                  <Icon className="w-4 h-4 shrink-0" />
-                  <span className="whitespace-nowrap">{ws.label}</span>
-                </span>
-              </button>
-            );
-          })}
-        </aside>
-
-        {/* Main Workspace Content */}
-        <main className="flex-1 min-w-0 space-y-6">
-          {productionMode && (
-            <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm leading-6 text-amber-950">
-              <strong>آمار تاریخی از فاکتورهای حسابفا محاسبه می‌شود:</strong> فاکتورهای آرشیوی در فروش، دریافتی و مطالبات داشبورد شمرده می‌شوند، اما همچنان فقط‌خواندنی‌اند و بر دفتر کل یا موجودی اثر ندارند. دریافتی و مطالبات، مانده واقعی صندوق/بانک یا دفتر کل نیستند؛ سود نیز در صورت نبود بهای خرید بعضی اقلام، برآوردی است.
-            </div>
-          )}
-          {/* Mobile Quick Switcher */}
-          <div className="flex md:hidden overflow-x-auto gap-2 pb-1">
-            {sidebarWorkspaces.map((ws) => (
-              <button
-                key={ws.id}
-                type="button"
-                onClick={() => setActiveWorkspace(ws.id)}
-                className={`px-3.5 py-2 text-xs font-medium rounded-lg whitespace-nowrap shrink-0 ${
-                  activeWorkspace === ws.id
-                    ? 'bg-slate-900 text-white'
-                    : 'bg-white text-slate-700 border border-slate-200'
-                }`}
-              >
-                {ws.label}
-              </button>
-            ))}
-          </div>
-
-          {/* WORKSPACE 1: HOME DASHBOARD */}
-          {activeWorkspace === 'home' && (
-            <div className="space-y-6">
-              <div className="bg-white p-6 rounded-xl border border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div className="space-y-1">
-                  <h1 className="text-lg font-bold text-slate-900">
-                    میزکار مدیریتی سازمان
-                  </h1>
-                  <p className="text-sm text-slate-500">
-                    نمای کلی شاخص‌های مالی، وضعیت موجودی انبار و دسترسی سریع به عملیات روزانه
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => openWorkspaceWithTab('accounting', 'sales_invoice')}
-                    className="px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 whitespace-nowrap"
-                  >
-                    + صدور فاکتور فروش
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => openWorkspaceWithTab('accounting', 'journal')}
-                    className="px-4 py-2 text-xs font-semibold text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200 whitespace-nowrap"
-                  >
-                    + ثبت سند روزنامه
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => openWorkspaceWithTab('pos')}
-                    className="px-4 py-2 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg hover:bg-indigo-100 whitespace-nowrap"
-                  >
-                    صندوق فروشگاهی
-                  </button>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                {dashboardCards.map((card) => (
-                  <div key={card.label} className="bg-white p-5 rounded-xl border border-slate-200 space-y-2">
-                    <div className="text-xs font-medium text-slate-500">{card.label}</div>
-                    <div className="font-mono tabular-nums font-bold text-lg text-slate-900">
-                      {card.isCount ? card.value : formatCurrency(card.value)}{' '}
-                      <span className="text-xs font-normal text-slate-500">
-                        {card.isCount ? 'آرتیکل' : 'تومان'}
-                      </span>
-                    </div>
-                    <div className="text-xs leading-5 text-slate-500">{card.detail}</div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Shortcut Cards Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-                {[
-                  {
-                    title: 'حسابداری و مدیریت مالی',
-                    desc: 'درخت حساب‌ها، تراز آزمایشی، اسناد روزنامه و خزانه‌داری',
-                    links: [
-                      { label: 'درخت حساب‌ها', act: () => openWorkspaceWithTab('accounting', 'coa') },
-                      { label: 'دفتر کل و تراز آزمایشی', act: () => openWorkspaceWithTab('accounting', 'gl_trial') },
-                      { label: 'ثبت سند روزنامه', act: () => openWorkspaceWithTab('accounting', 'journal') },
-                      { label: 'خزانه‌داری، چک و ارز', act: () => openWorkspaceWithTab('accounting', 'payment_cheques') },
-                    ],
-                  },
-                  {
-                    title: 'فروش، خرید و صندوق',
-                    desc: 'فاکتورهای فروش و خرید، صندوق فروشگاهی و مشتریان',
-                    links: [
-                      { label: 'فاکتورهای فروش و اقساط', act: () => openWorkspaceWithTab('selling', 'sales_invoice') },
-                      { label: 'فاکتورهای خرید کالا', act: () => openWorkspaceWithTab('accounting', 'purchase_invoice') },
-                      { label: 'صندوق فروشگاهی و پیش‌فاکتور', act: () => openWorkspaceWithTab('pos') },
-                      { label: 'ارتباط با مشتری و کمپین‌ها', act: () => openWorkspaceWithTab('crm') },
-                    ],
-                  },
-                  {
-                    title: 'انبار، وب‌شاپ و تنظیمات',
-                    desc: 'کاردکس کالا، درخواست شارژ انبار، فروشگاه آنلاین و هسته',
-                    links: [
-                      { label: 'انبار، کاردکس و شارژ کالا', act: () => openWorkspaceWithTab('stock') },
-                      { label: 'وبسایت و فروشگاه اینترنتی', act: () => openWorkspaceWithTab('webshop') },
-                      { label: 'گزارش‌ساز، اکسل و دسترسی‌ها', act: () => openWorkspaceWithTab('settings') },
-                      { label: 'دارایی‌های ثابت و سهامداران', act: () => openWorkspaceWithTab('accounting', 'assets') },
-                    ],
-                  },
-                ].map((box) => (
-                  <div
-                    key={box.title}
-                    className="bg-white p-5 rounded-xl border border-slate-200 flex flex-col justify-between gap-4"
-                  >
-                    <div className="space-y-1">
-                      <h3 className="text-base font-bold text-slate-900">{box.title}</h3>
-                      <p className="text-xs text-slate-500">{box.desc}</p>
-                    </div>
-                    <div className="space-y-1.5 pt-3 border-t border-slate-100">
-                      {box.links.map((lnk) => (
-                        <button
-                          key={lnk.label}
-                          type="button"
-                          onClick={lnk.act}
-                          className="w-full py-2 px-3 text-xs font-medium text-slate-700 hover:text-indigo-700 hover:bg-slate-50 rounded-lg flex items-center justify-between transition-colors"
-                        >
-                          <span>{lnk.label}</span>
-                          <ArrowUpLeft className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* WORKSPACE 2 & 3: ACCOUNTING / SELLING */}
-          {(activeWorkspace === 'accounting' || activeWorkspace === 'selling') && (
-            <AccountingModule
-              productionMode={productionMode}
-              activeRole={activeRole}
-              defaultBranch={defaultBranch}
-              activeFiscalYear={activeFiscalYear}
-              initialSubTab={accountingInitialTab}
-              accounts={accounts}
-              onAddAccount={(newAcc) => setAccounts((prev) => [...prev, newAcc])}
-              glEntries={glEntries}
-              journalEntries={journalEntries}
-              onSaveJournalEntry={handleSaveJournalEntry}
-              onSubmitJournalEntry={handleSubmitJournalEntry}
-              onCancelJournalEntry={handleCancelJournalEntry}
-              salesInvoices={salesInvoices}
-              onCreateSalesInvoice={handleCreateSalesInvoice}
-              onSubmitSalesInvoice={handleSubmitSalesInvoice}
-              onCancelSalesInvoice={handleCancelSalesInvoice}
-              onCreateCreditNote={handleCreateCreditNote}
-              purchaseInvoices={purchaseInvoices}
-              onCreatePurchaseInvoice={handleCreatePurchaseInvoice}
-              onSubmitPurchaseInvoice={handleSubmitPurchaseInvoice}
-              onCancelPurchaseInvoice={handleCancelPurchaseInvoice}
-              onCreateDebitNote={handleCreateDebitNote}
-              paymentEntries={paymentEntries}
-              onCreatePaymentEntry={handleCreatePaymentEntry}
-              onCancelPaymentEntry={handleCancelPaymentEntry}
-              cheques={cheques}
-              onClearCheque={handleClearCheque}
-              costCenters={costCenters}
-              onUpdateCostCenterPolicy={(id, policy) => {
-                setCostCenters((prev) =>
-                  prev.map((c) => (c.id === id ? { ...c, controlPolicy: policy } : c))
-                );
-                showToast(`سیاست کنترل بودجه مرکز هزینه به «${policy === 'STOP' ? 'توقف کامل ثبت' : 'هشدار'}» تغییر یافت.`);
-              }}
-              fixedAssets={fixedAssets}
-              onScrapOrSellAsset={(id, newStatus) => {
-                setFixedAssets((prev) =>
-                  prev.map((a) =>
-                    a.id === id
-                      ? {
-                          ...a,
-                          status: newStatus,
-                          currentBookValue:
-                            newStatus === 'تجدید ارزیابی‌شده'
-                              ? Math.round(a.currentBookValue * 1.25)
-                              : a.currentBookValue,
-                        }
-                      : a
-                  )
-                );
-                showToast(`وضعیت دارایی ثابت به «${newStatus}» تغییر یافت و سند مربوطه صادر شد.`);
-              }}
-              shareholders={shareholders}
-              inventoryItems={inventoryItems}
-              onShowToast={showToast}
-            />
-          )}
-
-          {/* WORKSPACE 4: STOCK & MATERIAL REQUEST */}
-          {activeWorkspace === 'stock' && (
-            <InventoryWmsModule
-              productionMode={productionMode}
-              activeRole={activeRole}
-              items={inventoryItems}
-              onUpdateItemStock={(sku, newPhysicalQty, varianceValue) => {
-                const voucherNo = `STK-${getPersianYear()}-${Date.now()}`;
-                const absoluteVariance = Math.abs(Math.round(varianceValue));
-                const isSurplus = varianceValue > 0;
-                const adjustmentLines =
-                  absoluteVariance === 0
-                    ? []
-                    : [
-                        {
-                          accountCode: isSurplus ? '1104' : '5203',
-                          debit: absoluteVariance,
-                          credit: 0,
-                        },
-                        {
-                          accountCode: isSurplus ? '4103' : '1104',
-                          debit: 0,
-                          credit: absoluteVariance,
-                        },
-                      ];
-
-                if (adjustmentLines.length > 0) {
-                  setAccounts((prev) => postDoubleEntryToAccounts(prev, adjustmentLines));
-                  const byCode = new Map(accounts.map((account) => [account.code, account]));
-                  appendGLEntries(
-                    adjustmentLines.map((line) => ({
-                      postingDate: formatPersianDate(),
-                      accountCode: line.accountCode,
-                      accountName: byCode.get(line.accountCode)?.name || line.accountCode,
-                      partyType: '—',
-                      partyName: 'انبار مرکزی کهریزک',
-                      debit: line.debit,
-                      credit: line.credit,
-                      voucherType: 'Stock Reconciliation',
-                      voucherNo,
-                      costCenter: 'انبار مرکزی و لجستیک کهریزک',
-                      branchDimension: 'انبار مرکزی کهریزک',
-                      remarks: `تعدیل موجودی کالا ${sku}`,
-                    }))
-                  );
-                }
-
-                setInventoryItems((prev) =>
-                  prev.map((item) =>
-                    item.sku === sku ? { ...item, stockQty: newPhysicalQty } : item
-                  )
-                );
-                const currentQty = inventoryItems.find((item) => item.sku === sku)?.stockQty;
-                appendAudit(
-                  'انبارگردانی',
-                  voucherNo,
-                  `موجودی ${sku}`,
-                  `${currentQty ?? 'نامشخص'} عدد`,
-                  `${newPhysicalQty} عدد`
-                );
-                return voucherNo;
-              }}
-              onAddGeneratedVariants={(newVars) =>
-                setInventoryItems((prev) => {
-                  const existingSkus = new Set(prev.map((item) => item.sku));
-                  const uniqueVariants = newVars.filter((item) => {
-                    if (existingSkus.has(item.sku)) return false;
-                    existingSkus.add(item.sku);
-                    return true;
-                  });
-                  return [...uniqueVariants, ...prev];
-                })
-              }
-              onShowToast={showToast}
-            />
-          )}
-
-          {/* WORKSPACE 5: POS */}
-          {activeWorkspace === 'pos' && (
-            <SellingPosModule
-              productionMode={productionMode}
-              contacts={customerContacts}
-              inventoryItems={inventoryItems}
-              onCompletePosSale={handleCompletePosSale}
-              onShowToast={showToast}
-            />
-          )}
-
-          {/* WORKSPACE 6: CRM */}
-          {activeWorkspace === 'crm' && (
-            <CrmMarketingModule
-              productionMode={productionMode}
-              leads={crmLeads}
-              contacts={customerContacts}
-              onAddLead={(lead) => setCrmLeads((prev) => [lead, ...prev])}
-              onAdvanceLeadStage={(id) => {
-                setCrmLeads((prev) =>
-                  prev.map((l) =>
-                    l.id === id
-                      ? { ...l, stage: 'ارسال پیش‌فاکتور', probability: Math.min(95, l.probability + 20) }
-                      : l
-                  )
-                );
-                showToast('مرحله فرصت فروش در قیف ارتباط با مشتری ارتقا یافت.');
-              }}
-              onShowToast={showToast}
-            />
-          )}
-
-          {/* WORKSPACE 7: WEBSITE, WEBSHOP & PORTAL */}
-          {activeWorkspace === 'webshop' && (
-            <SupportWebshopModule
-              productionMode={productionMode}
-              inventoryItems={inventoryItems}
-              salesInvoices={salesInvoices}
-              onWebshopOrderCheckout={handleWebshopOrderCheckout}
-              onShowToast={showToast}
-            />
-          )}
-
-          {/* WORKSPACE 8: SETTINGS & CORE */}
-          {activeWorkspace === 'settings' && (
-            <FrappeCoreModule
-              auditLogs={auditLogs}
-              onExportFullData={handleExportFullDatabase}
-              onShowToast={showToast}
-              onImportHesabfaData={handleImportHesabfaData}
-            />
-          )}
-        </main>
-      </div>
-
-      {/* Global Search Modal */}
-      {showAwesomebar && (
-        <div
-          className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-start justify-center pt-20 p-4"
-          onClick={() => setShowAwesomebar(false)}
-        >
-          <div
-            className="bg-white rounded-xl border border-slate-200 shadow-2xl max-w-lg w-full overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="p-3 border-b border-slate-200 flex items-center gap-2">
-              <Search className="w-4 h-4 text-slate-400" />
-              <input
-                type="text"
-                autoFocus
-                placeholder="جستجوی فرم، گزارش، سند یا فرمان..."
-                value={awesomeQuery}
-                onChange={(e) => setAwesomeQuery(e.target.value)}
-                className="w-full text-xs text-slate-900 focus:outline-none"
-              />
-            </div>
-            <div className="max-h-72 overflow-y-auto divide-y divide-slate-100">
-              {filteredCommands.map((cmd) => (
-                <button
-                  key={cmd.title}
-                  type="button"
-                  onClick={cmd.action}
-                  className="w-full px-4 py-2.5 text-right text-xs hover:bg-slate-50 flex items-center justify-between"
-                >
-                  <span className="font-medium text-slate-800">{cmd.title}</span>
-                  <span className="text-[11px] text-slate-400">{cmd.category}</span>
+                  {m.label}
                 </button>
               ))}
             </div>
@@ -2114,11 +1133,801 @@ export function App() {
 
       {/* Toast Notification */}
       {toastMessage && (
-        <div className="fixed bottom-5 left-5 z-50 max-w-md bg-slate-900 text-white px-4 py-3 rounded-xl shadow-lg border border-slate-700 flex items-center gap-2.5 text-xs">
+        <div className="fixed bottom-5 left-5 z-50 max-w-md bg-slate-900 text-white px-4 py-3 rounded-2xl shadow-lg border border-slate-700 flex items-center gap-3 text-xs">
           <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-          <span>{toastMessage}</span>
+          <span className="font-semibold flex-1">{toastMessage}</span>
+          <button
+            type="button"
+            onClick={() => setToastMessage(null)}
+            className="text-slate-400 hover:text-white font-bold"
+          >
+            ✕
+          </button>
         </div>
       )}
+
+      {/* Main Layout: Sidebar + Content Area */}
+      <div className="max-w-[1600px] mx-auto px-4 lg:px-6 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Right Sidebar Navigation (Sales button removed, Analytics & Calendar & Festivals added) */}
+        <aside className="lg:col-span-2 space-y-1.5">
+          {[
+            { id: 'home', label: 'میز کار (لانچر سریع)', icon: Home },
+            { id: 'pos', label: 'صندوق فروشگاهی (POS)', icon: Store },
+            { id: 'stock', label: 'انبارگردانی (۴ انبار)', icon: Package },
+            { id: 'festivals', label: 'جشنواره و باندل کالا', icon: Sparkles },
+            { id: 'accounting', label: 'حسابداری و سهامداران', icon: Calculator },
+            { id: 'analytics', label: 'آنالیز و آمار (BI)', icon: BarChart3 },
+            { id: 'crm', label: 'باشگاه مشتریان (۶ تب)', icon: Users },
+            { id: 'calendar', label: 'تقویم عملیاتی و Wishlist', icon: CalendarIcon },
+            { id: 'webshop', label: 'فروشگاه آنلاین', icon: Globe },
+            { id: 'settings', label: 'تنظیمات و شعبه', icon: Settings },
+          ].map((nav) => {
+            const Icon = nav.icon;
+            const isActive = activeWorkspace === nav.id;
+            return (
+              <button
+                key={nav.id}
+                type="button"
+                onClick={() => {
+                  if (nav.id === 'festivals') {
+                    setInventoryInitialTab('festivals_bundles');
+                    setActiveWorkspace('festivals');
+                  } else if (nav.id === 'stock') {
+                    setInventoryInitialTab('stocktaking');
+                    setActiveWorkspace('stock');
+                  } else {
+                    setActiveWorkspace(nav.id as WorkspaceId);
+                  }
+                }}
+                className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all ${
+                  isActive
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : darkMode
+                    ? 'text-slate-300 hover:bg-slate-900'
+                    : 'text-slate-700 hover:bg-white'
+                }`}
+              >
+                <span className="flex items-center gap-2.5">
+                  <Icon className="w-4 h-4 shrink-0" />
+                  <span>{nav.label}</span>
+                </span>
+                {nav.id === 'stock' && pendingBreakdownCount > 0 && (
+                  <span className="px-1.5 py-0.5 rounded-full bg-amber-500 text-white text-[10px] font-black tabular-nums">
+                    {pendingBreakdownCount}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </aside>
+
+        {/* Workspace Content */}
+        <main className="lg:col-span-10 space-y-6">
+          {/* =================================================================
+              MODULE 10: ODOO-STYLE MINIMAL HOME LAUNCHER (میز کار خلوت و محرمانه)
+             ================================================================= */}
+          {activeWorkspace === 'home' && (
+            <div className="space-y-6">
+              {/* Welcome Banner without exposing sensitive financial numbers */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-6 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-xs text-slate-900">
+                <div>
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-50 text-indigo-700 text-xs font-bold mb-2">
+                    <span>شعبه فعال: {defaultBranch}</span>
+                    <span>•</span>
+                    <span>حالت امنیتی عدم نمایش ارقام مالی در صفحه اول</span>
+                  </div>
+                  <h1 className="text-xl font-black text-slate-900">
+                    میز کار عملیاتی فراپِی (Odoo-Style Quick Launcher)
+                  </h1>
+                  <p className="text-xs text-slate-500 mt-1">
+                    برای حفظ محرمانگی در حضور مشتری، تمام گزارش‌های مالی و سود خالص به بخش «آنالیز و آمار» و «حسابداری» منتقل شده‌اند.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setActiveWorkspace('pos')}
+                    className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-indigo-600 text-white text-xs font-black hover:bg-indigo-700 shadow-xs"
+                  >
+                    <Store className="w-4 h-4" />
+                    <span>ورود سریع به صندوق فروشگاهی (POS)</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Urgent Operational Alerts (بدون افشای سود و سرمایه) */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-between text-xs text-amber-950">
+                  <div className="flex items-center gap-3">
+                    <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
+                    <div>
+                      <div className="font-black">فاکتورهای خرید در انتظار تفکیک SKU</div>
+                      <div className="text-amber-800 mt-0.5">
+                        {pendingBreakdownCount} پارت خرید نیازمند تخصیص طعم/رنگ در انبارگردانی
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInventoryInitialTab('sku_allocation');
+                      setActiveWorkspace('stock');
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-amber-900 text-white font-bold shrink-0"
+                  >
+                    تفکیک
+                  </button>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-sky-50 border border-sky-200 flex items-center justify-between text-xs text-sky-950">
+                  <div className="flex items-center gap-3">
+                    <Truck className="w-5 h-5 text-sky-600 shrink-0" />
+                    <div>
+                      <div className="font-black">بارهای خریداری‌شده «در راه»</div>
+                      <div className="text-sky-800 mt-0.5">
+                        {inTransitCount} محموله در مسیر تحویل به انبار مرکزی
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAccountingInitialTab('purchase_invoice');
+                      setActiveWorkspace('accounting');
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-sky-900 text-white font-bold shrink-0"
+                  >
+                    بررسی
+                  </button>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-rose-50 border border-rose-200 flex items-center justify-between text-xs text-rose-950">
+                  <div className="flex items-center gap-3">
+                    <CalendarIcon className="w-5 h-5 text-rose-600 shrink-0" />
+                    <div>
+                      <div className="font-black">یادآور سررسیدها و لیست انتظار</div>
+                      <div className="text-rose-800 mt-0.5">
+                        {unpaidSupplierBillsCount} فاکتور تعهدی و {customerWishlist.length} درخواست شارژ کالا
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveWorkspace('calendar')}
+                    className="px-3 py-1.5 rounded-lg bg-rose-900 text-white font-bold shrink-0"
+                  >
+                    تقویم
+                  </button>
+                </div>
+              </div>
+
+              {/* Odoo-Style App Launcher Grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                {[
+                  {
+                    id: 'pos',
+                    title: 'صندوق فروشگاهی (POS)',
+                    desc: 'فروش عادی، جشنواره، ریسلر، دکانت میلی‌لیتری جویس و خدمات فنی',
+                    icon: Store,
+                    color: 'bg-indigo-600',
+                  },
+                  {
+                    id: 'stock',
+                    title: 'انبارگردانی و ۴ انبار',
+                    desc: 'ویترین، انبار مغازه، انبار خارجی/مرکزی و امانی + تفکیک سریع با Enter',
+                    icon: Package,
+                    color: 'bg-emerald-600',
+                  },
+                  {
+                    id: 'festivals',
+                    title: 'جشنواره، تخفیف‌ها و باندل',
+                    desc: 'تعریف قوانین جشنواره، باندل‌سازی کیت ویپ و لیست قیمت همکاران',
+                    icon: Sparkles,
+                    color: 'bg-amber-600',
+                  },
+                  {
+                    id: 'accounting',
+                    title: 'حسابداری، خرید و ۳ قلک سهامداران',
+                    desc: 'درخت حساب‌ها، ترازنامه یکپارچه، هزینه ثابت ۲ جدولی و موتور ۵۰/۵۰ و ۷۰/۳۰',
+                    icon: Calculator,
+                    color: 'bg-slate-900',
+                  },
+                  {
+                    id: 'analytics',
+                    title: 'آنالیز و آمار (هوش تجاری)',
+                    desc: 'تفکیک سود ویپ و کامپیوتر، رادار رسوب کالا (>۴۵ روز) و هشدار انقضای جویس',
+                    icon: BarChart3,
+                    color: 'bg-purple-600',
+                  },
+                  {
+                    id: 'crm',
+                    title: 'باشگاه مشتریان و مخاطبین',
+                    desc: '۶ تب تخصصی مشتریان، ریسلرها، تأمین‌کنندگان و استخر پیامک انبوه',
+                    icon: Users,
+                    color: 'bg-rose-600',
+                  },
+                  {
+                    id: 'calendar',
+                    title: 'تقویم عملیاتی و Wishlist',
+                    desc: 'تقویم Notion-Style روزانه/هفتگی/ماهانه و درخواست شارژ کالای مشتریان',
+                    icon: CalendarIcon,
+                    color: 'bg-sky-600',
+                  },
+                  {
+                    id: 'settings',
+                    title: 'تنظیمات و مدیریت شعبه',
+                    desc: 'مدیریت تک‌شعبه‌ای، + افزودن شعبه جدید، خروجی اکسل و لاگ امنیتی',
+                    icon: Settings,
+                    color: 'bg-teal-600',
+                  },
+                ].map((card) => {
+                  const Icon = card.icon;
+                  return (
+                    <button
+                      key={card.id}
+                      type="button"
+                      onClick={() => {
+                        if (card.id === 'festivals') {
+                          setInventoryInitialTab('festivals_bundles');
+                          setActiveWorkspace('festivals');
+                        } else if (card.id === 'stock') {
+                          setInventoryInitialTab('stocktaking');
+                          setActiveWorkspace('stock');
+                        } else {
+                          setActiveWorkspace(card.id as WorkspaceId);
+                        }
+                      }}
+                      className="group text-right bg-white p-5 rounded-2xl border border-slate-200 hover:border-indigo-500 hover:shadow-md transition-all flex flex-col justify-between text-slate-900"
+                    >
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div
+                            className={`w-11 h-11 rounded-2xl ${card.color} text-white flex items-center justify-center shadow-xs`}
+                          >
+                            <Icon className="w-5 h-5" />
+                          </div>
+                          <ArrowUpLeft className="w-4 h-4 text-slate-300 group-hover:text-indigo-600 transition-colors" />
+                        </div>
+                        <div className="text-sm font-black text-slate-900">
+                          {card.title}
+                        </div>
+                        <p className="text-xs text-slate-500 leading-relaxed">
+                          {card.desc}
+                        </p>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* POS WORKSPACE */}
+          {activeWorkspace === 'pos' && (
+            <SellingPosModule
+              productionMode={productionMode}
+              privacyMasked={privacyMask}
+              contacts={customerContacts}
+              inventoryItems={inventoryItems}
+              promotionRules={promotionRules}
+              salesInvoices={salesInvoices}
+              onAddQuickCustomer={(newCust) => {
+                setCustomerContacts((prev) => [newCust, ...prev]);
+                showToast(`مشتری جدید «${newCust.fullName}» در باشگاه مشتریان ثبت شد.`);
+              }}
+              onUpdateResellerPrice={(sku, newPrice) => {
+                setInventoryItems((prev) =>
+                  prev.map((i) =>
+                    i.sku === sku
+                      ? { ...i, resellerPrice: newPrice, partnerPrice: newPrice }
+                      : i
+                  )
+                );
+                showToast(`قیمت همکاری کالای ${sku} بروزرسانی شد.`);
+              }}
+              onCompletePosCheckout={handleCompletePosCheckout}
+              onProcessPosReturn={handleProcessPosReturn}
+              onShowToast={showToast}
+            />
+          )}
+
+          {/* INVENTORY & FESTIVALS WORKSPACE */}
+          {(activeWorkspace === 'stock' || activeWorkspace === 'festivals') && (
+            <InventoryWmsModule
+              productionMode={productionMode}
+              privacyMasked={privacyMask}
+              activeRole={activeRole}
+              initialTab={
+                activeWorkspace === 'festivals'
+                  ? 'festivals_bundles'
+                  : inventoryInitialTab
+              }
+              items={inventoryItems}
+              warehouses={warehouses}
+              onAddWarehouse={(newWh) => {
+                setWarehouses((prev) => [...prev, newWh]);
+                showToast(`انبار جدید «${newWh.name}» به سیستم اضافه شد.`);
+              }}
+              masterOptions={masterOptions}
+              onAddMasterOption={handleAddMasterOption}
+              pendingBreakdownPurchases={purchaseInvoices.filter(
+                (p) => p.docstatus === 1 && !p.skuBreakdownCompleted
+              )}
+              onCompleteSkuBreakdown={handleCompleteSkuBreakdown}
+              promotionRules={promotionRules}
+              onAddPromotionRule={(rule) => {
+                setPromotionRules((prev) => [rule, ...prev]);
+                showToast(`جشنواره «${rule.name}» ذخیره و فعال شد.`);
+              }}
+              onTogglePromotionRule={(id) => {
+                setPromotionRules((prev) =>
+                  prev.map((r) => (r.id === id ? { ...r, isActive: !r.isActive } : r))
+                );
+              }}
+              onCreateBundleItem={(bundleItem) => {
+                setInventoryItems((prev) => [bundleItem, ...prev]);
+                showToast(`پکیج باندل «${bundleItem.name}» ساخته شد.`);
+              }}
+              onTransferWarehouseStock={handleTransferWarehouseStock}
+              onShowToast={showToast}
+            />
+          )}
+
+          {/* ACCOUNTING, SHAREHOLDERS & STAGE-1 PURCHASES WORKSPACE */}
+          {activeWorkspace === 'accounting' && (
+            <AccountingModule
+              productionMode={productionMode}
+              activeRole={activeRole}
+              defaultBranch={defaultBranch}
+              activeFiscalYear={activeFiscalYear}
+              initialSubTab={accountingInitialTab}
+              accounts={accounts}
+              onAddAccount={(acc) => setAccounts((prev) => [...prev, acc])}
+              glEntries={glEntries}
+              journalEntries={journalEntries}
+              onSaveJournalEntry={(je) => {
+                const lines = je.lines.map((l) => ({
+                  accountCode: l.accountCode,
+                  debit: l.debit,
+                  credit: l.credit,
+                }));
+                setAccounts((curr) => postDoubleEntryToAccounts(curr, lines));
+                setJournalEntries((prev) => [je, ...prev]);
+                showToast(`سند هزینه جاری «${je.title}» ثبت قطعی شد.`);
+              }}
+              onSubmitJournalEntry={() => {}}
+              onCancelJournalEntry={(id) => {
+                const je = journalEntries.find((j) => j.id === id);
+                if (!je || je.docstatus === 2) return;
+                const revLines = je.lines.map((l) => ({
+                  accountCode: l.accountCode,
+                  debit: l.credit,
+                  credit: l.debit,
+                }));
+                setAccounts((curr) => postDoubleEntryToAccounts(curr, revLines));
+                setJournalEntries((prev) =>
+                  prev.map((j) => (j.id === id ? { ...j, docstatus: 2 } : j))
+                );
+                showToast(`سند «${je.voucherNo}» باطل شد (Void) و مبلغ به حساب برگشت.`);
+              }}
+              salesInvoices={salesInvoices}
+              onCancelSalesInvoice={handleVoidSalesInvoice}
+              purchaseInvoices={purchaseInvoices}
+              onCreatePurchaseInvoice={handleCreatePurchaseInvoice}
+              onCancelPurchaseInvoice={handleVoidPurchaseInvoice}
+              onMarkPurchaseArrived={(id) => {
+                setPurchaseInvoices((prev) =>
+                  prev.map((p) =>
+                    p.id === id ? { ...p, deliveryStatus: 'رسیده' } : p
+                  )
+                );
+                showToast('وضعیت محموله به «رسیده به انبار» تغییر یافت.');
+              }}
+              costCenters={costCenters}
+              recurringTemplates={recurringTemplates}
+              monthlyExpenseLedger={monthlyExpenseLedger}
+              onAddRecurringTemplate={(tmpl) => {
+                setRecurringTemplates((prev) => [
+                  ...prev,
+                  { ...tmpl, id: `tmpl-${Date.now()}` },
+                ]);
+                showToast(`قالب هزینه ثابت «${tmpl.name}» اضافه شد.`);
+              }}
+              onUpdateRecurringTemplateAmount={(id, newAmount) => {
+                setRecurringTemplates((prev) =>
+                  prev.map((t) =>
+                    t.id === id ? { ...t, defaultMonthlyAmount: newAmount } : t
+                  )
+                );
+                showToast(
+                  'مبلغ پیش‌فرض قالب برای ماه‌های آینده بروز شد (رکوردهای قفل‌شده ماه‌های قبل تغییر نکردند).'
+                );
+              }}
+              onRecordMonthlyFixedExpense={({
+                templateId,
+                monthYear,
+                amount,
+                paidFromAccountCode,
+                note,
+              }) => {
+                const tmpl = recurringTemplates.find((t) => t.id === templateId);
+                if (!tmpl) return;
+                const vNo = `MFIX-${monthYear.replace('/', '')}-${
+                  monthlyExpenseLedger.length + 1
+                }`;
+                const newRec: MonthlyExpenseLedgerRecord = {
+                  id: `mexp-${Date.now()}`,
+                  templateId,
+                  expenseName: tmpl.name,
+                  monthYear,
+                  amount,
+                  paidFromAccountCode,
+                  paymentDate: formatPersianDate(new Date()),
+                  voucherNo: vNo,
+                  isLocked: true,
+                  note,
+                };
+                setAccounts((curr) =>
+                  postDoubleEntryToAccounts(curr, [
+                    { accountCode: tmpl.accountCode || '5201', debit: amount, credit: 0 },
+                    { accountCode: paidFromAccountCode, debit: 0, credit: amount },
+                  ])
+                );
+                setMonthlyExpenseLedger((prev) => [newRec, ...prev]);
+                showToast(
+                  `هزینه ثابت «${tmpl.name}» برای ماه ${monthYear} ثبت و در تاریخچه قفل شد.`
+                );
+              }}
+              fixedAssets={fixedAssets}
+              onAddFixedAsset={(ast) => {
+                const newAsset: FixedAssetRecord = {
+                  ...ast,
+                  id: `ast-${Date.now()}`,
+                };
+                setFixedAssets((prev) => [newAsset, ...prev]);
+                setAccounts((curr) =>
+                  postDoubleEntryToAccounts(curr, [
+                    { accountCode: '1201', debit: ast.purchaseValue, credit: 0 },
+                    {
+                      accountCode: ast.paidFromAccountCode || '110102',
+                      debit: 0,
+                      credit: ast.purchaseValue,
+                    },
+                  ])
+                );
+                showToast(`دارایی ثابت «${ast.name}» در اموال مغازه ثبت شد.`);
+              }}
+              onScrapOrSellAsset={() => {}}
+              shareholders={shareholders}
+              shareholderSnapshots={shareholderSnapshots}
+              shareholderDrawings={shareholderDrawings}
+              initialInventoryCapitalBaseline={initialInventoryCapitalBaseline}
+              onRecordShareholderDrawing={({
+                partnerId,
+                amount,
+                paidFromAccountCode,
+                note,
+              }) => {
+                const partner = shareholders.find((s) => s.id === partnerId);
+                if (!partner) return;
+                setShareholders((prev) =>
+                  prev.map((s) =>
+                    s.id === partnerId
+                      ? { ...s, dividendPaid: (s.dividendPaid || 0) + amount }
+                      : s
+                  )
+                );
+                setShareholderDrawings((prev) => [
+                  {
+                    id: `drw-${Date.now()}`,
+                    partnerId,
+                    partnerName: partner.name,
+                    date: formatPersianDate(new Date()),
+                    amount,
+                    paidFromAccountCode,
+                    note,
+                  },
+                  ...prev,
+                ]);
+                setAccounts((curr) =>
+                  postDoubleEntryToAccounts(curr, [
+                    { accountCode: '3103', debit: amount, credit: 0 },
+                    { accountCode: paidFromAccountCode, debit: 0, credit: amount },
+                  ])
+                );
+                showToast(
+                  `برداشت سود به مبلغ ${formatCurrency(amount)} ریال برای «${partner.name}» ثبت شد.`
+                );
+              }}
+              onRecordShareholderCapitalInjection={({
+                partnerId,
+                amount,
+                toAccountCode,
+              }) => {
+                const partner = shareholders.find((s) => s.id === partnerId);
+                if (!partner) return;
+                setShareholders((prev) =>
+                  prev.map((s) =>
+                    s.id === partnerId
+                      ? {
+                          ...s,
+                          personalCapitalInjected:
+                            (s.personalCapitalInjected || 0) + amount,
+                        }
+                      : s
+                  )
+                );
+                setAccounts((curr) =>
+                  postDoubleEntryToAccounts(curr, [
+                    { accountCode: toAccountCode, debit: amount, credit: 0 },
+                    { accountCode: '3101', debit: 0, credit: amount },
+                  ])
+                );
+                showToast(
+                  `آورده نقدی به مبلغ ${formatCurrency(amount)} ریال برای «${partner.name}» ثبت شد.`
+                );
+              }}
+              onUpdateShareholderPercentagesWithSnapshot={({
+                partner1CapitalPct,
+                partner1ProfitPct,
+                partner2CapitalPct,
+                partner2ProfitPct,
+                note,
+              }) => {
+                const snap: ShareholderRuleSnapshot = {
+                  id: `sh-snap-${Date.now()}`,
+                  effectiveDate: formatPersianDate(new Date()),
+                  partner1Name: shareholders[0]?.name || 'شریک اول',
+                  partner1CapitalPct,
+                  partner1ProfitPct,
+                  partner2Name: shareholders[1]?.name || 'شریک دوم',
+                  partner2CapitalPct,
+                  partner2ProfitPct,
+                  frozenPartner1Wallet: 0,
+                  frozenPartner2Wallet: 0,
+                  frozenRecoveryPool: initialInventoryCapitalBaseline,
+                  note,
+                };
+                setShareholderSnapshots((prev) => [snap, ...prev]);
+                setShareholders((prev) =>
+                  prev.map((s, idx) =>
+                    idx === 0
+                      ? {
+                          ...s,
+                          ownershipPercent: partner1CapitalPct,
+                          profitSharePercent: partner1ProfitPct,
+                        }
+                      : {
+                          ...s,
+                          ownershipPercent: partner2CapitalPct,
+                          profitSharePercent: partner2ProfitPct,
+                        }
+                  )
+                );
+                showToast(
+                  'تغییر درصد سهامداران با ثبت Snapshot فریز تاریخچه ذخیره شد.'
+                );
+              }}
+              inventoryItems={inventoryItems}
+              customerContacts={customerContacts}
+              onQuickAddSupplier={(supplierName, phone) => {
+                const newContact: CustomerContactRecord = {
+                  id: `sup-${Date.now()}`,
+                  sourceCode: `SUP-${customerContacts.length + 1}`,
+                  fullName: supplierName,
+                  personType: 'حقوقی / تامین‌کننده',
+                  role: 'تأمین‌کننده',
+                  contactCategory: 'supplier',
+                  phone: phone || '—',
+                  notes: 'افزوده‌شده مستقیم از فرم فاکتور خرید',
+                };
+                setCustomerContacts((prev) => [newContact, ...prev]);
+                showToast(`تأمین‌کننده «${supplierName}» به لیست مخاطبین اضافه شد.`);
+              }}
+              masterOptions={masterOptions}
+              onAddMasterOption={handleAddMasterOption}
+              warehouses={warehouses}
+              onNavigateToPos={() => setActiveWorkspace('pos')}
+              onNavigateToInventoryBreakdown={() => {
+                setInventoryInitialTab('sku_allocation');
+                setActiveWorkspace('stock');
+              }}
+              privacyMask={privacyMask}
+              onShowToast={showToast}
+            />
+          )}
+
+          {/* ANALYTICS & BI WORKSPACE */}
+          {activeWorkspace === 'analytics' && (
+            <AnalyticsBiModule
+              privacyMasked={privacyMask}
+              onTogglePrivacy={() => setPrivacyMask((prev) => !prev)}
+              accounts={accounts}
+              inventoryItems={inventoryItems}
+              salesInvoices={salesInvoices}
+              purchaseInvoices={purchaseInvoices}
+              journalEntries={journalEntries}
+              monthlyExpenses={monthlyExpenseLedger}
+              contacts={customerContacts}
+              onCreateDeadStockFestivalRule={(sku, itemName) => {
+                const rule: PromotionRuleRecord = {
+                  id: `promo-dead-${Date.now()}`,
+                  name: `حراج رسوب انبار: ${itemName}`,
+                  festivalType: 'حراج رسوب انبار',
+                  discountType: 'percent',
+                  discountValue: 15,
+                  minQty: 1,
+                  targetGroup: 'همه مشتریان',
+                  startDate: '۱۴۰۴/۰۸/۱۵',
+                  endDate: '۱۴۰۴/۰۹/۱۵',
+                  applicableSkus: [sku],
+                  paymentModel: 'نقد',
+                  isActive: true,
+                };
+                setPromotionRules((prev) => [rule, ...prev]);
+                showToast(
+                  `جشنواره ۱۵٪ تخفیف برای خروج کالای راکد «${itemName}» ایجاد و فعال شد.`
+                );
+              }}
+              onShowToast={showToast}
+            />
+          )}
+
+          {/* CRM & MARKETING WORKSPACE (6 TABS) */}
+          {activeWorkspace === 'crm' && (
+            <CrmMarketingModule
+              leads={crmLeads}
+              contacts={customerContacts}
+              salesInvoices={salesInvoices}
+              purchaseInvoices={purchaseInvoices}
+              paymentEntries={paymentEntries}
+              bulkSmsPool={bulkSmsPool}
+              privacyMasked={privacyMask}
+              productionMode={productionMode}
+              onAddContact={(newContact) => {
+                setCustomerContacts((prev) => [newContact, ...prev]);
+                showToast(`مخاطب «${newContact.fullName}» ثبت شد.`);
+              }}
+              onAddLead={(lead) => {
+                setCrmLeads((prev) => [lead, ...prev]);
+                showToast(`سرنخ تبلیغاتی «${lead.fullName}» ثبت شد.`);
+              }}
+              onAdvanceLeadStage={(id) => {
+                setCrmLeads((prev) =>
+                  prev.map((l) =>
+                    l.id === id ? { ...l, stage: 'مشتری وفادار', probability: 100 } : l
+                  )
+                );
+              }}
+              onImportBulkSmsNumbers={(items) => {
+                setBulkSmsPool((prev) => [...items, ...prev]);
+                showToast(
+                  `${items.length} شماره جدید به استخر لید انبوه (Bulk SMS Pool) اضافه شد.`
+                );
+              }}
+              onShowToast={showToast}
+            />
+          )}
+
+          {/* OPERATIONAL CALENDAR & CUSTOMER WISHLIST WORKSPACE */}
+          {activeWorkspace === 'calendar' && (
+            <OperationalCalendarModule
+              events={calendarEvents}
+              wishlist={customerWishlist}
+              purchaseInvoices={purchaseInvoices}
+              salesInvoices={salesInvoices}
+              recurringTemplates={recurringTemplates}
+              onAddEvent={(ev) => {
+                setCalendarEvents((prev) => [
+                  { ...ev, id: `ev-${Date.now()}` },
+                  ...prev,
+                ]);
+                showToast(`یادآور «${ev.title}» در تقویم عملیاتی ثبت شد.`);
+              }}
+              onToggleEventComplete={(id) => {
+                setCalendarEvents((prev) =>
+                  prev.map((e) =>
+                    e.id === id ? { ...e, isCompleted: !e.isCompleted } : e
+                  )
+                );
+              }}
+              onDeleteEvent={(id) => {
+                setCalendarEvents((prev) => prev.filter((e) => e.id !== id));
+              }}
+              onAddWishlist={(w) => {
+                setCustomerWishlist((prev) => [
+                  { ...w, id: `wish-${Date.now()}` },
+                  ...prev,
+                ]);
+                showToast(
+                  `درخواست شارژ «${w.requestedItemName}» برای ${w.customerName} ثبت و به تقویم متصل شد.`
+                );
+              }}
+              onUpdateWishlistStatus={(id, status) => {
+                setCustomerWishlist((prev) =>
+                  prev.map((w) => (w.id === id ? { ...w, status } : w))
+                );
+                showToast(`وضعیت درخواست مشتری به «${status}» تغییر کرد.`);
+              }}
+              onDeleteWishlist={(id) => {
+                setCustomerWishlist((prev) => prev.filter((w) => w.id !== id));
+              }}
+              privacyMask={privacyMask}
+            />
+          )}
+
+          {/* WEBSHOP & SUPPORT WORKSPACE */}
+          {activeWorkspace === 'webshop' && (
+            <SupportWebshopModule
+              productionMode={productionMode}
+              inventoryItems={inventoryItems}
+              salesInvoices={salesInvoices}
+              onWebshopOrderCheckout={(item) => {
+                showToast(`سفارش آنلاین برای «${item.name}» ثبت شد.`);
+              }}
+              onShowToast={showToast}
+            />
+          )}
+
+          {/* SETTINGS & SINGLE-BRANCH MANAGEMENT WORKSPACE */}
+          {activeWorkspace === 'settings' && (
+            <FrappeCoreModule
+              auditLogs={auditLogs}
+              branches={branches}
+              activeBranch={defaultBranch}
+              onAddBranch={(newBranch) => {
+                if (!branches.includes(newBranch)) {
+                  setBranches((prev) => [...prev, newBranch]);
+                }
+                setDefaultBranch(newBranch);
+                showToast(`شعبه جدید «${newBranch}» اضافه و به عنوان شعبه فعال انتخاب شد.`);
+              }}
+              onSelectBranch={(b) => {
+                setDefaultBranch(b);
+                showToast(`شعبه فعال روی «${b}» تنظیم شد.`);
+              }}
+              onExportFullData={() => {
+                const dump = {
+                  exportedAt: new Date().toISOString(),
+                  branch: defaultBranch,
+                  accounts,
+                  inventoryItems,
+                  customerContacts,
+                  salesInvoices,
+                  purchaseInvoices,
+                  shareholders,
+                };
+                const url = URL.createObjectURL(
+                  new Blob([JSON.stringify(dump, null, 2)], {
+                    type: 'application/json',
+                  })
+                );
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'farapay-cloudyshop-backup.json';
+                a.click();
+              }}
+              onShowToast={showToast}
+              onImportHesabfaData={(raw) => {
+                try {
+                  const payload = parseHesabfaImportPayload(raw);
+                  const summary = summarizeHesabfaImport(payload);
+                  setProductionMode(true);
+                  setInventoryItems(normalizeCloudyShopInventory(payload.products));
+                  setCustomerContacts(payload.contacts);
+                  setSalesInvoices(payload.salesInvoices);
+                  showToast(
+                    `ورود داده انجام شد: ${summary.productCount} کالا و ${summary.contactCount} مخاطب.`
+                  );
+                } catch {
+                  showToast('خطا در خواندن فایل ورودی.');
+                }
+              }}
+            />
+          )}
+        </main>
+      </div>
     </div>
   );
 }
