@@ -1,6 +1,6 @@
 {
-  "summary":  "نسخه نهایی طرح اجرایی فاز ۲ برای تطبیق ۱۰۰٪ سامانه فراپِی با دیزاین‌سیستم رسمی Shopify Polaris شامل Collapsible برای ۱۱ فیلد مشخصات فنی SKU، Sheet کشویی برای ثبت مشتری/تأمین‌کننده/مخاطب جدید با دکمه (+)، تک‌اکشن Primary با قفل loading، دکمه‌های Destructive با تاییدیه استاندارد، جداول فشرده IndexTable، و تمرکز تمام عملیات صدور فاکتور (فروش و خرید) در /pos همراه با حسابداری ۱۰۰٪ Read-Only.",
-  "updatedAt":  "2026-10-25T12:53:34.173615982Z",
+  "summary":  "نسخه نهایی طرح جامع اجرایی (Master Implementation Plan): تطبیق ۱۰۰٪ با استانداردهای مرجع Shopify Polaris، مقاوم‌سازی زیرساخت هسته (IndexedDB اتمیک، Web Locks، محاسبات اعشاری بدون خطای Floating-Point، صف واقعی FIFO/MWA، موتور ۳ قلک سهامداری با Snapshot)، مرکز بک‌آپ Time-Machine در هسته و تنظیمات و تکمیل ابزارهای عملیاتی و ۶ ویجت تحلیلی.",
+  "updatedAt":  "2026-10-25T13:29:59.302826861Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

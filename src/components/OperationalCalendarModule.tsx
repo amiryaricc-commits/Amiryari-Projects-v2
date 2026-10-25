@@ -22,8 +22,10 @@ import {
   PurchaseInvoiceRecord,
   SalesInvoiceRecord,
   RecurringExpenseTemplate,
+  MonthlyExpenseLedgerRecord,
 } from '../data/erpSeedData';
 import { formatCurrency } from '../utils/erpEngine';
+import { PolarisBadge, PolarisButton } from './CreatableCombobox';
 
 interface OperationalCalendarModuleProps {
   events: OperationalCalendarEvent[];
@@ -31,6 +33,15 @@ interface OperationalCalendarModuleProps {
   purchaseInvoices: PurchaseInvoiceRecord[];
   salesInvoices: SalesInvoiceRecord[];
   recurringTemplates: RecurringExpenseTemplate[];
+  monthlyExpenseLedger?: MonthlyExpenseLedgerRecord[];
+  onRecordMonthlyFixedExpense?: (payload: {
+    templateId: string;
+    monthYear: string;
+    amount: number;
+    paidFromAccountCode: string;
+    note?: string;
+  }) => void;
+  onUpdateRecurringTemplateAmount?: (id: string, newAmount: number) => void;
   onAddEvent: (event: Omit<OperationalCalendarEvent, 'id'>) => void;
   onToggleEventComplete: (id: string) => void;
   onDeleteEvent: (id: string) => void;
@@ -108,6 +119,9 @@ export const OperationalCalendarModule: React.FC<OperationalCalendarModuleProps>
   purchaseInvoices,
   salesInvoices,
   recurringTemplates,
+  monthlyExpenseLedger = [],
+  onRecordMonthlyFixedExpense,
+  onUpdateRecurringTemplateAmount,
   onAddEvent,
   onToggleEventComplete,
   onDeleteEvent,
@@ -116,7 +130,16 @@ export const OperationalCalendarModule: React.FC<OperationalCalendarModuleProps>
   onDeleteWishlist,
   privacyMask,
 }) => {
-  const [activeTab, setActiveTab] = useState<'calendar' | 'wishlist'>('calendar');
+  const [activeTab, setActiveTab] = useState<'calendar' | 'wishlist' | 'fixed_expenses'>('calendar');
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>(
+    recurringTemplates[0]?.id || 'tmpl-rent'
+  );
+  const [lockMonthYear, setLockMonthYear] = useState('۱۴۰۴/۰۸');
+  const [lockAmount, setLockAmount] = useState<number>(
+    recurringTemplates[0]?.defaultMonthlyAmount || 35000000
+  );
+  const [lockPaidFromCode, setLockPaidFromCode] = useState('110102');
+  const [lockNote, setLockNote] = useState('');
   const [viewMode, setViewMode] = useState<'daily' | 'weekly' | 'monthly'>('monthly');
   const [selectedCategory, setSelectedCategory] = useState<
     OperationalCalendarEvent['category'] | 'all'
@@ -344,6 +367,18 @@ export const OperationalCalendarModule: React.FC<OperationalCalendarModuleProps>
           >
             <Sparkles className="w-4 h-4" />
             <span>درخواست شارژ کالا توسط خریدار (Wishlist: {wishlist.length})</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('fixed_expenses')}
+            className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+              activeTab === 'fixed_expenses'
+                ? 'bg-purple-700 text-white shadow-xs'
+                : 'bg-purple-50 text-purple-800 hover:bg-purple-100'
+            }`}
+          >
+            <Building2 className="w-4 h-4" />
+            <span>ثبت قطعی و قفل هزینه ثابت ماهانه ({monthlyExpenseLedger.length})</span>
           </button>
         </div>
       </div>
@@ -1030,6 +1065,215 @@ export const OperationalCalendarModule: React.FC<OperationalCalendarModuleProps>
                 ))}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 3: LOCK MONTHLY FIXED EXPENSES & RECURRING TEMPLATES */}
+      {activeTab === 'fixed_expenses' && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-200 p-5 space-y-4 h-fit">
+            <div className="border-b border-slate-100 pb-3">
+              <h3 className="text-sm font-black text-slate-900">
+                ثبت قطعی و قفل کردن هزینه ثابت ماهانه (Monthly Expense Ledger)
+              </h3>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                با ثبت قطعی هزینه ماه جاری، یک رکورد قفل‌شده با تگ ماه/سال ایجاد می‌شود تا تغییر مبلغ قالب در آینده، هزینه‌های ماه‌های قبل را دستکاری نکند.
+              </p>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  انتخاب قالب هزینه ثابت (Recurring Template)
+                </label>
+                <select
+                  value={selectedTemplateId}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    setSelectedTemplateId(id);
+                    const tmpl = recurringTemplates.find((t) => t.id === id);
+                    if (tmpl) setLockAmount(tmpl.defaultMonthlyAmount);
+                  }}
+                  className="w-full rounded-xl border border-slate-300 px-3 py-2 bg-white text-slate-900"
+                >
+                  {recurringTemplates.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name} (پیش‌فرض: {formatCurrency(t.defaultMonthlyAmount)} ریال)
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    تگ ماه و سال (monthYear)
+                  </label>
+                  <input
+                    type="text"
+                    value={lockMonthYear}
+                    onChange={(e) => setLockMonthYear(e.target.value)}
+                    placeholder="۱۴۰۴/۰۸"
+                    className="w-full rounded-xl border border-slate-300 px-3 py-2 font-mono tabular-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    مبلغ قطعی این ماه (ریال)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={lockAmount}
+                    onChange={(e) => setLockAmount(Math.max(0, Number(e.target.value) || 0))}
+                    className="w-full rounded-xl border border-slate-300 px-3 py-2 font-mono font-bold tabular-nums"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  حساب نقدینگی پرداخت‌کننده
+                </label>
+                <select
+                  value={lockPaidFromCode}
+                  onChange={(e) => setLockPaidFromCode(e.target.value)}
+                  className="w-full rounded-xl border border-slate-300 px-3 py-2 bg-white"
+                >
+                  <option value="110102">110102 — کارت بانکی (کارت به کارت)</option>
+                  <option value="110101">110101 — دستگاه کارتخوان (POS)</option>
+                  <option value="110103">110103 — صندوق نقد مغازه</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  یادداشت سند
+                </label>
+                <input
+                  type="text"
+                  value={lockNote}
+                  onChange={(e) => setLockNote(e.target.value)}
+                  placeholder="مثلاً: فیش واریزی اجاره آبان..."
+                  className="w-full rounded-xl border border-slate-300 px-3 py-2"
+                />
+              </div>
+
+              <PolarisButton
+                primary
+                fullWidth
+                onClick={() => {
+                  if (!onRecordMonthlyFixedExpense || lockAmount <= 0) return;
+                  onRecordMonthlyFixedExpense({
+                    templateId: selectedTemplateId,
+                    monthYear: lockMonthYear.trim() || '۱۴۰۴/۰۸',
+                    amount: lockAmount,
+                    paidFromAccountCode: lockPaidFromCode,
+                    note: lockNote.trim() || undefined,
+                  });
+                  setLockNote('');
+                }}
+              >
+                ثبت قطعی و قفل هزینه ماه {lockMonthYear}
+              </PolarisButton>
+            </div>
+
+            {/* Edit Default Template Amounts for Future Months */}
+            <div className="pt-4 border-t border-slate-200 space-y-2 text-xs">
+              <div className="font-bold text-slate-800">
+                ویرایش مبلغ پیش‌فرض قالب‌ها برای ماه‌های آینده:
+              </div>
+              {recurringTemplates.map((tmpl) => (
+                <div
+                  key={tmpl.id}
+                  className="flex items-center justify-between gap-2 p-2.5 rounded-lg bg-slate-50 border border-slate-200"
+                >
+                  <span className="font-semibold text-slate-800">{tmpl.name}</span>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="number"
+                      min={0}
+                      defaultValue={tmpl.defaultMonthlyAmount}
+                      onBlur={(e) => {
+                        const nextVal = Math.max(0, Number(e.target.value) || 0);
+                        if (
+                          nextVal !== tmpl.defaultMonthlyAmount &&
+                          onUpdateRecurringTemplateAmount
+                        ) {
+                          onUpdateRecurringTemplateAmount(tmpl.id, nextVal);
+                        }
+                      }}
+                      className="w-28 px-2 py-1 rounded border border-slate-300 bg-white font-mono text-left tabular-nums"
+                    />
+                    <span className="text-[11px] text-slate-500">ریال</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="lg:col-span-7 bg-white rounded-2xl border border-slate-200 p-5 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="text-sm font-black text-slate-900">
+                  دفتر هزینه‌های ماهانه قفل‌شده (Immutable Monthly Expense Ledger)
+                </h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  رکوردهای این جدول با تگ ماه/سال قفل شده‌اند و با تغییر قالب‌های آینده تغییر نمی‌کنند.
+                </p>
+              </div>
+              <PolarisBadge status="success">
+                {monthlyExpenseLedger.length} رکورد قفل‌شده
+              </PolarisBadge>
+            </div>
+
+            <div className="overflow-x-auto border border-slate-200 rounded-xl">
+              <table className="w-full text-right text-xs border-collapse">
+                <thead className="bg-slate-100 text-slate-600 border-b border-slate-200">
+                  <tr>
+                    <th className="py-2.5 px-3">شماره سند</th>
+                    <th className="py-2.5 px-3">عنوان هزینه ثابت</th>
+                    <th className="py-2.5 px-3">ماه و سال (monthYear)</th>
+                    <th className="py-2.5 px-3">مبلغ قطعی</th>
+                    <th className="py-2.5 px-3">حساب پرداخت</th>
+                    <th className="py-2.5 px-3">وضعیت</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {monthlyExpenseLedger.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="py-8 text-center text-slate-400">
+                        هنوز هزینه ماهانه‌ای قفل نشده است؛ از فرم سمت راست هزینه ماه جاری را ثبت و قفل کنید.
+                      </td>
+                    </tr>
+                  ) : (
+                    monthlyExpenseLedger.map((rec) => (
+                      <tr key={rec.id} className="hover:bg-slate-50">
+                        <td className="py-2.5 px-3 font-mono font-bold text-indigo-700">
+                          {rec.voucherNo}
+                        </td>
+                        <td className="py-2.5 px-3 font-bold text-slate-900">
+                          {rec.expenseName}
+                        </td>
+                        <td className="py-2.5 px-3 font-mono tabular-nums">
+                          {rec.monthYear}
+                        </td>
+                        <td className="py-2.5 px-3 font-mono font-bold tabular-nums">
+                          {maskValue(rec.amount)}
+                        </td>
+                        <td className="py-2.5 px-3 font-mono text-slate-600">
+                          {rec.paidFromAccountCode}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <PolarisBadge status="success">قفل‌شده (Locked)</PolarisBadge>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}

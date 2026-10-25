@@ -29,6 +29,10 @@ import {
   consumeFifoLayers,
   smartFilterAndRankItems,
   voidInvoice,
+  exactAdd,
+  exactSub,
+  computeSnapshotChecksum,
+  computeSnapshotDiff,
 } from './erpEngine';
 import { INITIAL_ACCOUNTS, INITIAL_GL_ENTRIES } from '../data/erpSeedData';
 
@@ -722,5 +726,38 @@ test('MWA and FIFO support standard 2-decimal precision and Three-Bucket exposes
   assert.equal(tb.partnerWallets.partner70, 4200000);
   assert.equal(tb.partnerWallets.partner30, 1800000);
 });
+
+test('exactAdd and exactSub eliminate IEEE-754 floating-point drift and Time-Machine computeSnapshotDiff detects stock and balance deltas', () => {
+  assert.equal(exactAdd(0.1, 0.2), 0.3);
+  assert.equal(exactSub(0.3, 0.1), 0.2);
+
+  const snapState = {
+    accounts: [{ code: '110101', name: 'کارتخوان', balance: 1000000 }],
+    salesInvoices: [{ id: 's1', totalAmount: 1000000, docstatus: 1 }],
+    purchaseInvoices: [],
+    inventoryItems: [{ sku: 'SKU-1', name: 'سالت انبه', stockQty: 10, valuationRate: 400000 }],
+  };
+  const snapChecksum = computeSnapshotChecksum(snapState);
+
+  const liveState = {
+    accounts: [{ code: '110101', name: 'کارتخوان', balance: 1500000 }],
+    salesInvoices: [
+      { id: 's1', totalAmount: 1000000, docstatus: 1 },
+      { id: 's2', totalAmount: 500000, docstatus: 1 },
+    ],
+    purchaseInvoices: [],
+    inventoryItems: [{ sku: 'SKU-1', name: 'سالت انبه', stockQty: 8, valuationRate: 400000 }],
+  };
+
+  const diff = computeSnapshotDiff({ ...snapState, checksum: snapChecksum }, liveState);
+  assert.equal(diff.isIdentical, false);
+  assert.equal(diff.salesInvoiceCountDiff, 1);
+  assert.equal(diff.salesTotalDiff, 500000);
+  assert.equal(diff.skuChanges.length, 1);
+  assert.equal(diff.skuChanges[0].diffQty, -2);
+  assert.equal(diff.accountChanges.length, 1);
+  assert.equal(diff.accountChanges[0].diffBalance, 500000);
+});
+
 
 

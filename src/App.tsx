@@ -16,8 +16,6 @@ import {
   EyeOff,
   Sun,
   Moon,
-  Undo2,
-  Redo2,
   Save,
   AlertTriangle,
   ArrowUpLeft,
@@ -41,6 +39,7 @@ import {
   INITIAL_MASTER_OPTIONS,
   INITIAL_RECURRING_EXPENSE_TEMPLATES,
   INITIAL_PROMOTION_RULES,
+  INITIAL_STOCK_LEDGER_ENTRIES,
   DEFAULT_BRANCH_NAME,
   AccountNode,
   GLEntryRecord,
@@ -66,6 +65,8 @@ import {
   OperationalCalendarEvent,
   CustomerWishlistRecord,
   WarehouseKey,
+  StockLedgerEntryRecord,
+  TimeMachineSnapshotRecord,
 } from './data/erpSeedData';
 import { CLOUDY_SHOP_CONTACTS, CLOUDY_SHOP_INVENTORY } from './data/cloudyShopData';
 
@@ -75,13 +76,12 @@ import {
   formatPersianDate,
   getPersianYear,
   postDoubleEntryToAccounts,
-  deductStockWithBundles,
   restoreStockWithBundles,
   calculateMovingAverageValuation,
   deductDecantMlFromBottle,
   consumeFifoLayers,
-  calculateThreeBucketShareholderState,
   voidInvoice,
+  computeSnapshotChecksum,
 } from './utils/erpEngine';
 
 import { AccountingModule, AccountingSubTab } from './components/AccountingModule';
@@ -95,7 +95,7 @@ import { InventoryWmsModule } from './components/InventoryWmsModule';
 import { AnalyticsBiModule } from './components/AnalyticsBiModule';
 import { OperationalCalendarModule } from './components/OperationalCalendarModule';
 import { SupportWebshopModule } from './components/SupportWebshopModule';
-import { FrappeCoreModule } from './components/FrappeCoreModule';
+import { FrappeCoreModule, FrappeCoreSubTab } from './components/FrappeCoreModule';
 import { usePersistentArrayState } from './hooks/usePersistentArrayState';
 import {
   parseHesabfaImportPayload,
@@ -134,20 +134,6 @@ const getWorkspaceFromPath = (pathname: string): WorkspaceId => {
   );
   return entry ? entry[0] : 'home';
 };
-
-interface SystemBackupSnapshot {
-  id: string;
-  timestamp: string;
-  label: string;
-  accounts: AccountNode[];
-  glEntries: GLEntryRecord[];
-  journalEntries: JournalEntryRecord[];
-  salesInvoices: SalesInvoiceRecord[];
-  purchaseInvoices: PurchaseInvoiceRecord[];
-  inventoryItems: InventoryItemRecord[];
-  customerContacts: CustomerContactRecord[];
-  shareholders: ShareholderRecord[];
-}
 
 const PRODUCTION_MODE_KEY = 'farapay.v1.production-mode';
 const CLOUDY_SHOP_V4_KEY = 'farapay.v4.cloudy-shop-4wh-init';
@@ -195,6 +181,8 @@ export function App() {
   const [inventoryInitialTab, setInventoryInitialTab] = useState<
     'stocktaking' | 'sku_allocation' | 'festivals_bundles'
   >('stocktaking');
+  const [settingsInitialTab, setSettingsInitialTab] =
+    useState<FrappeCoreSubTab>('time_machine');
 
   const setActiveWorkspace = useCallback((ws: WorkspaceId) => {
     setActiveWorkspaceState(ws);
@@ -372,10 +360,15 @@ export function App() {
         },
       ]
     );
-  const [auditLogs, setAuditLogs] = usePersistentArrayState<AuditLogRecord>(
+  const [auditLogs] = usePersistentArrayState<AuditLogRecord>(
     'farapay.v1.audit-logs',
     INITIAL_AUDIT_LOGS
   );
+  const [stockLedgerEntries, setStockLedgerEntries] =
+    usePersistentArrayState<StockLedgerEntryRecord>(
+      'farapay.v4.stock-ledger-entries',
+      INITIAL_STOCK_LEDGER_ENTRIES
+    );
   const [masterOptions, setMasterOptions] = useState<MasterOptionsRegistry>(() => {
     try {
       const raw = window.localStorage.getItem('farapay.v4.master-options');
@@ -387,9 +380,15 @@ export function App() {
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Bidirectional Backup Snapshots (Undo / Redo without deleting latest snapshot)
-  const [backupSnapshots, setBackupSnapshots] = useState<SystemBackupSnapshot[]>([]);
-  const [currentSnapshotIndex, setCurrentSnapshotIndex] = useState<number>(-1);
+  // Bidirectional Time-Machine Backup Snapshots (Undo / Redo without deleting latest snapshot)
+  const [backupSnapshots, setBackupSnapshots] =
+    usePersistentArrayState<TimeMachineSnapshotRecord>(
+      'farapay.v4.time-machine-snapshots',
+      []
+    );
+  const [currentSnapshotIndex, setCurrentSnapshotIndex] = useState<number>(() =>
+    backupSnapshots.length > 0 ? backupSnapshots.length - 1 : -1
+  );
 
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
@@ -431,12 +430,32 @@ export function App() {
     );
   }, []);
 
-  // Save a Backup Snapshot
-  const handleCreateSnapshot = (customLabel?: string) => {
-    const snap: SystemBackupSnapshot = {
-      id: `snap-${Date.now()}`,
-      timestamp: new Date().toLocaleTimeString('fa-IR'),
-      label: customLabel || `بکاپ لحظه‌ای (${backupSnapshots.length + 1})`,
+  const buildSnapshotRecord = (
+    customLabel?: string,
+    backupType: TimeMachineSnapshotRecord['backupType'] = 'دستی (Manual)',
+    nextIdxNumber?: number
+  ): TimeMachineSnapshotRecord => {
+    const verNum = nextIdxNumber ?? backupSnapshots.length + 1;
+    const checksum = computeSnapshotChecksum({
+      accounts,
+      salesInvoices,
+      purchaseInvoices,
+      inventoryItems,
+    });
+    const totalAssets =
+      accounts.find((a) => a.code === '1000')?.balance ??
+      inventoryItems.reduce((s, i) => s + i.stockQty * (i.valuationRate || 0), 0);
+
+    return {
+      id: `snap-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      versionCode: `V${String(verNum).padStart(3, '0')}`,
+      timestamp: `${formatPersianDate(new Date())} - ${new Date().toLocaleTimeString('fa-IR')}`,
+      backupType,
+      label: customLabel || `بک‌آپ دستی نسخه ${verNum}`,
+      checksum,
+      invoiceCount: salesInvoices.length + purchaseInvoices.length,
+      skuCount: inventoryItems.length,
+      totalAssets,
       accounts: structuredClone(accounts),
       glEntries: structuredClone(glEntries),
       journalEntries: structuredClone(journalEntries),
@@ -445,18 +464,31 @@ export function App() {
       inventoryItems: structuredClone(inventoryItems),
       customerContacts: structuredClone(customerContacts),
       shareholders: structuredClone(shareholders),
+      shareholderSnapshots: structuredClone(shareholderSnapshots),
+      monthlyExpenseLedger: structuredClone(monthlyExpenseLedger),
+      stockLedgerEntries: structuredClone(stockLedgerEntries),
     };
+  };
+
+  // Save a Manual Backup Snapshot
+  const handleCreateSnapshot = (customLabel?: string): TimeMachineSnapshotRecord => {
+    const snap = buildSnapshotRecord(
+      customLabel,
+      'دستی (Manual)',
+      backupSnapshots.length + 1
+    );
     setBackupSnapshots((prev) => {
       const next = [...prev, snap];
       setCurrentSnapshotIndex(next.length - 1);
       return next;
     });
-    showToast(`نقطه بازیابی «${snap.label}» ذخیره شد (امکان عقبگرد و جلوگرد بدون حذف).`);
+    showToast(
+      `نسخه بک‌آپ «${snap.versionCode} (${snap.label})» با کد سلامت ${snap.checksum} ثبت شد.`
+    );
+    return snap;
   };
 
-  const applySnapshotAtIndex = (idx: number) => {
-    const snap = backupSnapshots[idx];
-    if (!snap) return;
+  const applySnapshotState = (snap: TimeMachineSnapshotRecord, idx: number) => {
     setAccounts(snap.accounts);
     setGlEntries(snap.glEntries);
     setJournalEntries(snap.journalEntries);
@@ -465,19 +497,58 @@ export function App() {
     setInventoryItems(snap.inventoryItems);
     setCustomerContacts(snap.customerContacts);
     setShareholders(snap.shareholders);
+    if (snap.shareholderSnapshots) {
+      setShareholderSnapshots(snap.shareholderSnapshots);
+    }
+    if (snap.monthlyExpenseLedger) {
+      setMonthlyExpenseLedger(snap.monthlyExpenseLedger);
+    }
+    if (snap.stockLedgerEntries) {
+      setStockLedgerEntries(snap.stockLedgerEntries);
+    }
     setCurrentSnapshotIndex(idx);
+  };
+
+  const handleRestoreSnapshotAtIndex = (targetIdx: number) => {
+    const targetSnap = backupSnapshots[targetIdx];
+    if (!targetSnap) return;
+
+    // Non-destructive protection: if user is at the tip and live state changed, save a protective snapshot first so Roll-forward never loses the latest work
+    const liveChecksum = computeSnapshotChecksum({
+      accounts,
+      salesInvoices,
+      purchaseInvoices,
+      inventoryItems,
+    });
+    const lastSnap = backupSnapshots[backupSnapshots.length - 1];
+    if (
+      targetIdx < backupSnapshots.length - 1 &&
+      lastSnap &&
+      lastSnap.checksum !== liveChecksum
+    ) {
+      const protective = buildSnapshotRecord(
+        'وضعیت آخرین تغییرات پیش از بازگشت به عقب',
+        'حفاظتی خودکار (Protective)',
+        backupSnapshots.length + 1
+      );
+      setBackupSnapshots((prev) => [...prev, protective]);
+    }
+
+    applySnapshotState(targetSnap, targetIdx);
+    showToast(
+      `بازگردانی به نسخه «${targetSnap.versionCode} (${targetSnap.label})» انجام شد؛ نسخه‌های بعدی حذف نشدند و قابل پیشروی هستند.`
+    );
   };
 
   const handleUndoSnapshot = () => {
     if (backupSnapshots.length === 0) {
-      showToast('ابتدا با دکمه «ثبت بکاپ» یک نقطه بازیابی ذخیره کنید.');
+      showToast('ابتدا یک نسخه بک‌آپ در مرکز Time-Machine ثبت کنید.');
       return;
     }
-    const targetIdx = Math.max(0, currentSnapshotIndex - 1);
-    applySnapshotAtIndex(targetIdx);
-    showToast(
-      `عقبگرد (Rollback) به «${backupSnapshots[targetIdx].label}» انجام شد؛ آخرین بکاپ حذف نشد و قابل جلوگرد است.`
-    );
+    const effectiveCurrent =
+      currentSnapshotIndex >= 0 ? currentSnapshotIndex : backupSnapshots.length - 1;
+    const targetIdx = Math.max(0, effectiveCurrent - 1);
+    handleRestoreSnapshotAtIndex(targetIdx);
   };
 
   const handleRedoSnapshot = () => {
@@ -485,12 +556,69 @@ export function App() {
       backupSnapshots.length === 0 ||
       currentSnapshotIndex >= backupSnapshots.length - 1
     ) {
-      showToast('شما در آخرین نسخه بکاپ قرار دارید.');
+      showToast('شما در آخرین نسخه تاریخچه قرار دارید.');
       return;
     }
     const targetIdx = currentSnapshotIndex + 1;
-    applySnapshotAtIndex(targetIdx);
-    showToast(`جلوگرد (Roll-Forward) به «${backupSnapshots[targetIdx].label}» انجام شد.`);
+    const snap = backupSnapshots[targetIdx];
+    if (!snap) return;
+    applySnapshotState(snap, targetIdx);
+    showToast(`پیشروی (Roll-forward) به نسخه «${snap.versionCode} (${snap.label})» انجام شد.`);
+  };
+
+  const handleImportBackupSnapshotFile = (rawJson: string, fileName: string) => {
+    try {
+      const parsed = JSON.parse(rawJson);
+      if (!parsed || !Array.isArray(parsed.accounts) || !Array.isArray(parsed.inventoryItems)) {
+        showToast('فرمت فایل بک‌آپ معتبر نیست.');
+        return;
+      }
+      const verNum = backupSnapshots.length + 1;
+      const checksum = computeSnapshotChecksum({
+        accounts: parsed.accounts,
+        salesInvoices: parsed.salesInvoices || [],
+        purchaseInvoices: parsed.purchaseInvoices || [],
+        inventoryItems: parsed.inventoryItems,
+      });
+      const totalAssets =
+        parsed.accounts.find((a: AccountNode) => a.code === '1000')?.balance ?? 0;
+
+      const importedSnap: TimeMachineSnapshotRecord = {
+        id: `snap-imp-${Date.now()}`,
+        versionCode: `V${String(verNum).padStart(3, '0')}`,
+        timestamp: `${formatPersianDate(new Date())} - ${new Date().toLocaleTimeString('fa-IR')}`,
+        backupType: 'ایمپورت فایل (Import)',
+        label: parsed.label || `ایمپورت فایل: ${fileName}`,
+        checksum,
+        invoiceCount:
+          (parsed.salesInvoices?.length || 0) + (parsed.purchaseInvoices?.length || 0),
+        skuCount: parsed.inventoryItems.length,
+        totalAssets,
+        accounts: parsed.accounts,
+        glEntries: parsed.glEntries || [],
+        journalEntries: parsed.journalEntries || [],
+        salesInvoices: parsed.salesInvoices || [],
+        purchaseInvoices: parsed.purchaseInvoices || [],
+        inventoryItems: parsed.inventoryItems,
+        customerContacts: parsed.customerContacts || customerContacts,
+        shareholders: parsed.shareholders || shareholders,
+        shareholderSnapshots: parsed.shareholderSnapshots || shareholderSnapshots,
+        monthlyExpenseLedger: parsed.monthlyExpenseLedger || monthlyExpenseLedger,
+        stockLedgerEntries: parsed.stockLedgerEntries || stockLedgerEntries,
+      };
+
+      setBackupSnapshots((prev) => {
+        const next = [...prev, importedSnap];
+        setCurrentSnapshotIndex(next.length - 1);
+        return next;
+      });
+      applySnapshotState(importedSnap, backupSnapshots.length);
+      showToast(
+        `فایل بک‌آپ «${fileName}» به عنوان نسخه ${importedSnap.versionCode} ایمپورت و بازیابی شد.`
+      );
+    } catch {
+      showToast('خطا در پردازش فایل JSON بک‌آپ.');
+    }
   };
 
   const handleAddMasterOption = (
@@ -592,20 +720,41 @@ export function App() {
       }
     }
 
-    // Deduct service consumables if linked
+    // Deduct service consumables from Vitrine warehouse if linked
     let serviceConsumableCogs = 0;
+    const newStockLedgerRows: StockLedgerEntryRecord[] = [];
+    const invNo = `POS-${getPersianYear()}-${String(1001 + salesInvoices.length).padStart(4, '0')}`;
+    const todayStr = formatPersianDate(new Date());
+
     for (const sLine of payload.serviceLines) {
       if (sLine.linkedConsumableSku && (sLine.linkedConsumableQty || 0) > 0) {
         const cIdx = updatedInventory.findIndex((i) => i.sku === sLine.linkedConsumableSku);
         if (cIdx !== -1) {
           const cItem = updatedInventory[cIdx];
           const deductQty = sLine.linkedConsumableQty || 1;
+          const nextStock = Math.max(0, cItem.stockQty - deductQty);
+          const whStock = { ...(cItem.warehouseStock || {}) };
+          whStock.vitrine = Math.max(0, (whStock.vitrine ?? cItem.stockQty) - deductQty);
           updatedInventory[cIdx] = {
             ...cItem,
-            stockQty: Math.max(0, cItem.stockQty - deductQty),
+            stockQty: nextStock,
+            warehouseStock: whStock,
             totalOutQty: (cItem.totalOutQty ?? 0) + deductQty,
           };
           serviceConsumableCogs += deductQty * (cItem.valuationRate || 0);
+          newStockLedgerRows.push({
+            id: `sle-srv-${Date.now()}-${cItem.sku}`,
+            postingDate: todayStr,
+            sku: cItem.sku,
+            itemName: cItem.name,
+            warehouseKey: 'vitrine',
+            qtyChange: -deductQty,
+            balanceAfter: nextStock,
+            valuationRate: cItem.valuationRate || 0,
+            voucherType: 'Service Consumable',
+            voucherNo: invNo,
+            sector: cItem.sector || 'vape',
+          });
         }
       }
     }
@@ -613,8 +762,6 @@ export function App() {
     const totalCogs = vapeCogs + pcCogs + serviceConsumableCogs;
     const serviceRev = payload.serviceLines.reduce((s, l) => s + l.feeAmount, 0);
     const productRev = Math.max(0, payload.netTotal - serviceRev);
-    const invNo = `POS-${getPersianYear()}-${String(1001 + salesInvoices.length).padStart(4, '0')}`;
-    const todayStr = formatPersianDate(new Date());
 
     const newInvoice: SalesInvoiceRecord = {
       id: `sinv-${Date.now()}`,
@@ -703,6 +850,9 @@ export function App() {
     setAccounts((curr) => postDoubleEntryToAccounts(curr, ledgerLines));
     setInventoryItems(updatedInventory);
     setSalesInvoices((prev) => [newInvoice, ...prev]);
+    if (newStockLedgerRows.length > 0) {
+      setStockLedgerEntries((prev) => [...newStockLedgerRows, ...prev]);
+    }
 
     // Update Customer Contact Debit Balance if Credit Sale
     if (payload.creditReceivableAmount > 0 && payload.customerName) {
@@ -1049,39 +1199,29 @@ export function App() {
             <span>{privacyMask ? 'حریم خصوصی فعال (****)' : 'ارقام آشکار (قفل خودکار ۶۰ث)'}</span>
           </button>
 
-          {/* 3. Bidirectional Backup Snapshot Controls (Save / Undo / Redo) */}
-          <div className="hidden sm:flex items-center gap-1 p-1 rounded-xl border border-slate-200 bg-slate-50 text-slate-700">
-            <button
-              type="button"
-              onClick={() => handleCreateSnapshot()}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-900 text-white text-[11px] font-bold hover:bg-slate-800"
-              title="ثبت نقطه بازیابی جدید (Snapshot)"
-            >
-              <Save className="w-3.5 h-3.5" />
-              <span>ثبت بکاپ ({backupSnapshots.length})</span>
-            </button>
-            <button
-              type="button"
-              onClick={handleUndoSnapshot}
-              disabled={backupSnapshots.length === 0}
-              className="p-1.5 rounded-lg hover:bg-slate-200 disabled:opacity-40"
-              title="عقبگرد به بکاپ قبلی (Rollback بدون حذف آخرین بکاپ)"
-            >
-              <Undo2 className="w-3.5 h-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={handleRedoSnapshot}
-              disabled={
-                backupSnapshots.length === 0 ||
-                currentSnapshotIndex >= backupSnapshots.length - 1
-              }
-              className="p-1.5 rounded-lg hover:bg-slate-200 disabled:opacity-40"
-              title="جلوگرد به آخرین بکاپ (Roll-Forward)"
-            >
-              <Redo2 className="w-3.5 h-3.5" />
-            </button>
-          </div>
+          {/* 3. Header Last-Backup Status Indicator (Time-Machine Quick Link) */}
+          <button
+            type="button"
+            onClick={() => {
+              setSettingsInitialTab('time_machine');
+              setActiveWorkspace('settings');
+            }}
+            className="hidden sm:inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-800 text-xs font-bold transition-colors"
+            title="مشاهده مرکز بک‌آپ و مدیریت نسخه‌ها (Time-Machine) در تنظیمات هسته"
+          >
+            <Save className="w-3.5 h-3.5 text-emerald-600" />
+            <span>
+              {backupSnapshots.length > 0
+                ? `آخرین بک‌آپ: ${
+                    backupSnapshots[
+                      currentSnapshotIndex >= 0
+                        ? currentSnapshotIndex
+                        : backupSnapshots.length - 1
+                    ]?.versionCode || 'V001'
+                  } (${backupSnapshots.length} نسخه)`
+                : 'مرکز بک‌آپ Time-Machine (۰ نسخه)'}
+            </span>
+          </button>
 
           {/* 4. User Profile Badge */}
           <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-100 border border-slate-200 text-xs font-bold text-slate-800">
@@ -1865,6 +2005,52 @@ export function App() {
               purchaseInvoices={purchaseInvoices}
               salesInvoices={salesInvoices}
               recurringTemplates={recurringTemplates}
+              monthlyExpenseLedger={monthlyExpenseLedger}
+              onUpdateRecurringTemplateAmount={(id, newAmount) => {
+                setRecurringTemplates((prev) =>
+                  prev.map((t) =>
+                    t.id === id ? { ...t, defaultMonthlyAmount: newAmount } : t
+                  )
+                );
+                showToast(
+                  'مبلغ پیش‌فرض قالب برای ماه‌های آینده بروز شد (رکوردهای قفل‌شده ماه‌های قبل تغییر نکردند).'
+                );
+              }}
+              onRecordMonthlyFixedExpense={({
+                templateId,
+                monthYear,
+                amount,
+                paidFromAccountCode,
+                note,
+              }) => {
+                const tmpl = recurringTemplates.find((t) => t.id === templateId);
+                if (!tmpl) return;
+                const vNo = `MFIX-${monthYear.replace('/', '')}-${
+                  monthlyExpenseLedger.length + 1
+                }`;
+                const newRec: MonthlyExpenseLedgerRecord = {
+                  id: `mexp-${Date.now()}`,
+                  templateId,
+                  expenseName: tmpl.name,
+                  monthYear,
+                  amount,
+                  paidFromAccountCode,
+                  paymentDate: formatPersianDate(new Date()),
+                  voucherNo: vNo,
+                  isLocked: true,
+                  note,
+                };
+                setAccounts((curr) =>
+                  postDoubleEntryToAccounts(curr, [
+                    { accountCode: tmpl.accountCode || '5201', debit: amount, credit: 0 },
+                    { accountCode: paidFromAccountCode, debit: 0, credit: amount },
+                  ])
+                );
+                setMonthlyExpenseLedger((prev) => [newRec, ...prev]);
+                showToast(
+                  `هزینه ثابت «${tmpl.name}» برای ماه ${monthYear} ثبت و در تاریخچه قفل شد.`
+                );
+              }}
               onAddEvent={(ev) => {
                 setCalendarEvents((prev) => [
                   { ...ev, id: `ev-${Date.now()}` },
@@ -1917,9 +2103,10 @@ export function App() {
             />
           )}
 
-          {/* SETTINGS & SINGLE-BRANCH MANAGEMENT WORKSPACE */}
+          {/* SETTINGS, TIME-MACHINE BACKUP & SINGLE-BRANCH MANAGEMENT WORKSPACE */}
           {activeWorkspace === 'settings' && (
             <FrappeCoreModule
+              initialTab={settingsInitialTab}
               auditLogs={auditLogs}
               branches={branches}
               activeBranch={defaultBranch}
@@ -1933,6 +2120,62 @@ export function App() {
               onSelectBranch={(b) => {
                 setDefaultBranch(b);
                 showToast(`شعبه فعال روی «${b}» تنظیم شد.`);
+              }}
+              snapshots={backupSnapshots}
+              activeSnapshotIndex={currentSnapshotIndex}
+              currentLiveState={{
+                accounts,
+                salesInvoices,
+                purchaseInvoices,
+                inventoryItems,
+              }}
+              onCreateManualSnapshot={handleCreateSnapshot}
+              onRestoreSnapshotAtIndex={handleRestoreSnapshotAtIndex}
+              onRollbackSnapshot={handleUndoSnapshot}
+              onRollForwardSnapshot={handleRedoSnapshot}
+              onImportBackupSnapshotFile={handleImportBackupSnapshotFile}
+              shareholders={shareholders}
+              shareholderSnapshots={shareholderSnapshots}
+              onUpdateShareholderPercentagesWithSnapshot={({
+                partner1CapitalPct,
+                partner1ProfitPct,
+                partner2CapitalPct,
+                partner2ProfitPct,
+                note,
+              }) => {
+                const snap: ShareholderRuleSnapshot = {
+                  id: `sh-snap-${Date.now()}`,
+                  effectiveDate: formatPersianDate(new Date()),
+                  partner1Name: shareholders[0]?.name || 'شریک اول',
+                  partner1CapitalPct,
+                  partner1ProfitPct,
+                  partner2Name: shareholders[1]?.name || 'شریک دوم',
+                  partner2CapitalPct,
+                  partner2ProfitPct,
+                  frozenPartner1Wallet: 0,
+                  frozenPartner2Wallet: 0,
+                  frozenRecoveryPool: initialInventoryCapitalBaseline,
+                  note,
+                };
+                setShareholderSnapshots((prev) => [snap, ...prev]);
+                setShareholders((prev) =>
+                  prev.map((s, idx) =>
+                    idx === 0
+                      ? {
+                          ...s,
+                          ownershipPercent: partner1CapitalPct,
+                          profitSharePercent: partner1ProfitPct,
+                        }
+                      : {
+                          ...s,
+                          ownershipPercent: partner2CapitalPct,
+                          profitSharePercent: partner2ProfitPct,
+                        }
+                  )
+                );
+                showToast(
+                  'تغییر درصد سهامداران با ثبت Snapshot فریز تاریخچه در هسته سیستم ذخیره شد.'
+                );
               }}
               onExportFullData={() => {
                 const dump = {

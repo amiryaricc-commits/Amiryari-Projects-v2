@@ -43,6 +43,8 @@ import {
   PolarisCollapsible,
   PolarisSheet,
 } from './CreatableCombobox';
+import { useBarcodeScanner } from '../hooks/useBarcodeScanner';
+import { calculatePosCartTotals } from '../utils/posService';
 
 export interface PosCheckoutPayload {
   cartLines: {
@@ -365,6 +367,24 @@ export const SellingPosModule: React.FC<SellingPosModuleProps> = ({
     onShowToast(`کالای جدید «${newItem.name}» ایجاد و به سبد خرید اضافه شد.`);
   };
 
+  // Hardware Barcode Scanner Hook (non-interfering with normal inputs)
+  useBarcodeScanner({
+    enabled: activeView === 'pos',
+    onScan: (scannedCode) => {
+      const matched = smartFilterAndRankItems(inventoryItems, scannedCode);
+      if (matched.length > 0) {
+        handleAddItemToCart(matched[0], false);
+        setBarcodeQuery('');
+        setIsSearchPopoverOpen(false);
+        barcodeInputRef.current?.focus();
+      } else {
+        setBarcodeQuery(scannedCode);
+        setIsSearchPopoverOpen(true);
+        barcodeInputRef.current?.focus();
+      }
+    },
+  });
+
   // Barcode scanner Enter handler: adds exact or top match, clears input & keeps focus
   const handleBarcodeKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
@@ -425,27 +445,25 @@ export const SellingPosModule: React.FC<SellingPosModuleProps> = ({
     onShowToast(`خدمت «${newService.serviceTitle}» به فاکتور اضافه شد.`);
   };
 
-  // Calculate Totals
-  const goodsTotal = cart.reduce((sum, r) => sum + Math.round(r.qty * r.manualUnitPrice), 0);
-  const servicesTotal = serviceLines.reduce((sum, s) => sum + s.feeAmount, 0);
-  const totalQtyInCart = cart.reduce((sum, r) => sum + (r.isDecantMl ? 1 : r.qty), 0);
-
-  const activeQuantityRule = useMemo(() => {
-    if (pricingMode !== 'festival') return null;
-    return promotionRules.find(
-      (r) => r.isActive && r.festivalType === 'خرید بالای X قلم' && totalQtyInCart >= (r.minQty || 3)
-    );
-  }, [pricingMode, promotionRules, totalQtyInCart]);
-
-  const festivalExtraDiscount = activeQuantityRule
-    ? activeQuantityRule.discountType === 'fixed'
-      ? activeQuantityRule.discountValue
-      : 0
-    : 0;
-
-  const grandTotal = Math.max(0, goodsTotal + servicesTotal - festivalExtraDiscount);
-  const effectivePaidAmount = paidAmountInput === null ? grandTotal : Math.max(0, paidAmountInput);
-  const creditReceivableAmount = Math.max(0, grandTotal - effectivePaidAmount);
+  // Calculate Totals via posService (Exact decimal arithmetic)
+  const {
+    goodsTotal,
+    servicesTotal,
+    festivalExtraDiscount,
+    grandTotal,
+    effectivePaidAmount,
+    creditReceivableAmount,
+  } = useMemo(
+    () =>
+      calculatePosCartTotals({
+        cart,
+        serviceLines,
+        pricingMode,
+        promotionRules,
+        paidAmountInput,
+      }),
+    [cart, serviceLines, pricingMode, promotionRules, paidAmountInput]
+  );
 
   // Customer filter (Name or Phone)
   const matchingCustomers = useMemo(() => {
@@ -973,7 +991,7 @@ export const SellingPosModule: React.FC<SellingPosModuleProps> = ({
                 className="mt-2.5 p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700"
               >
                 <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end text-xs">
-                  <div className="sm:col-span-4">
+                  <div className="sm:col-span-3">
                     <label className="block text-[11px] text-slate-500 mb-1">عنوان خدمت فنی</label>
                     <input
                       type="text"
@@ -983,7 +1001,7 @@ export const SellingPosModule: React.FC<SellingPosModuleProps> = ({
                       className="w-full px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
                     />
                   </div>
-                  <div className="sm:col-span-3">
+                  <div className="sm:col-span-2">
                     <label className="block text-[11px] text-slate-500 mb-1">دستمزد (تومان)</label>
                     <input
                       type="number"
@@ -991,23 +1009,36 @@ export const SellingPosModule: React.FC<SellingPosModuleProps> = ({
                       value={serviceFee || ''}
                       onChange={(e) => setServiceFee(Number(e.target.value))}
                       placeholder="85000"
-                      className="w-full px-2.5 py-1.5 font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
+                      className="w-full px-2.5 py-1.5 font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg tabular-nums"
                     />
                   </div>
                   <div className="sm:col-span-3">
-                    <label className="block text-[11px] text-slate-500 mb-1">قطعه مصرفی انبار</label>
+                    <label className="block text-[11px] text-slate-500 mb-1">کالای مصرفی از ویترین</label>
                     <select
                       value={linkedConsumableSku}
                       onChange={(e) => setLinkedConsumableSku(e.target.value)}
                       className="w-full px-2 py-1.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
                     >
-                      <option value="">بدون کسر قطعه</option>
+                      <option value="">بدون کسر کالای مصرفی</option>
                       {inventoryItems.map((i) => (
                         <option key={i.sku} value={i.sku}>
-                          {i.name} ({i.stockQty})
+                          {i.name} (ویترین: {i.warehouseStock?.vitrine ?? i.stockQty})
                         </option>
                       ))}
                     </select>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="block text-[11px] text-slate-500 mb-1">تعداد مصرفی</label>
+                    <input
+                      type="number"
+                      min={1}
+                      disabled={!linkedConsumableSku}
+                      value={linkedConsumableQty}
+                      onChange={(e) =>
+                        setLinkedConsumableQty(Math.max(1, Number(e.target.value) || 1))
+                      }
+                      className="w-full px-2 py-1.5 font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg tabular-nums disabled:opacity-50"
+                    />
                   </div>
                   <div className="sm:col-span-2">
                     <PolarisButton
@@ -1337,7 +1368,12 @@ export const SellingPosModule: React.FC<SellingPosModuleProps> = ({
                       {serviceLines.map((srv) => (
                         <tr key={srv.id} className="bg-indigo-50/40 dark:bg-indigo-950/20">
                           <td className="py-2 px-2 font-semibold text-indigo-900 dark:text-indigo-200" colSpan={2}>
-                            خدمت: {srv.serviceTitle}
+                            <div>خدمت: {srv.serviceTitle}</div>
+                            {srv.linkedConsumableName && (
+                              <div className="text-[10px] text-indigo-600 dark:text-indigo-400">
+                                کسر مصرفی ویترین: {srv.linkedConsumableName} × {srv.linkedConsumableQty || 1}
+                              </div>
+                            )}
                           </td>
                           <td className="py-2 px-2 text-slate-400">—</td>
                           <td className="py-2 px-2 font-mono tabular-nums">

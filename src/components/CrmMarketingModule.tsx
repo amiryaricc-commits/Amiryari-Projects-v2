@@ -668,7 +668,7 @@ export const CrmMarketingModule: React.FC<CrmMarketingModuleProps> = ({
             open={isBulkImportCollapsibleOpen}
             className="p-3.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 space-y-2.5 text-xs"
           >
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 items-end">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-2.5 items-end">
               <div>
                 <label className="block font-medium mb-1">برچسب گروه تبلیغاتی</label>
                 <input
@@ -679,13 +679,27 @@ export const CrmMarketingModule: React.FC<CrmMarketingModuleProps> = ({
                 />
               </div>
               <div>
-                <label className="block font-medium mb-1">لیست شماره‌ها (هر خط یک شماره)</label>
+                <label className="block font-medium mb-1">لیست شماره‌ها (کپی متنی)</label>
                 <input
                   type="text"
                   value={bulkRawInput}
                   onChange={(e) => setBulkRawInput(e.target.value)}
                   placeholder="09121112233, 09352223344..."
                   className="w-full px-3 py-1.5 font-mono bg-white dark:bg-slate-900 border border-slate-300 rounded-lg"
+                />
+              </div>
+              <div>
+                <label className="block font-medium mb-1">آپلود فایل (.csv / .txt)</label>
+                <input
+                  type="file"
+                  accept=".csv,.txt,text/csv,text/plain"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    const text = await file.text();
+                    setBulkRawInput((prev) => (prev ? `${prev}\n${text}` : text));
+                  }}
+                  className="w-full text-[11px] bg-white dark:bg-slate-900 border border-slate-300 rounded-lg p-1"
                 />
               </div>
               <PolarisButton primary size="slim" onClick={handleBulkSmsParseAndImport}>

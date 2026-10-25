@@ -9,6 +9,7 @@ export interface PolarisButtonProps {
   children: React.ReactNode;
   onClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
   type?: 'button' | 'submit' | 'reset';
+  submit?: boolean;
   primary?: boolean;
   destructive?: boolean;
   outline?: boolean;
@@ -22,10 +23,39 @@ export interface PolarisButtonProps {
   className?: string;
 }
 
+export interface PolarisBadgeProps {
+  children: React.ReactNode;
+  status?: 'success' | 'info' | 'warning' | 'critical' | 'default';
+}
+
+export const PolarisBadge: React.FC<PolarisBadgeProps> = ({
+  children,
+  status = 'default',
+}) => {
+  const toneClass =
+    status === 'success'
+      ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+      : status === 'info'
+        ? 'bg-indigo-50 text-indigo-800 border-indigo-200'
+        : status === 'warning'
+          ? 'bg-amber-50 text-amber-800 border-amber-200'
+          : status === 'critical'
+            ? 'bg-rose-50 text-rose-800 border-rose-200'
+            : 'bg-slate-100 text-slate-700 border-slate-200';
+  return (
+    <span
+      className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold border ${toneClass}`}
+    >
+      {children}
+    </span>
+  );
+};
+
 export const PolarisButton: React.FC<PolarisButtonProps> = ({
   children,
   onClick,
   type = 'button',
+  submit = false,
   primary = false,
   destructive = false,
   outline = false,
@@ -64,7 +94,7 @@ export const PolarisButton: React.FC<PolarisButtonProps> = ({
 
   return (
     <button
-      type={type}
+      type={submit ? 'submit' : type}
       title={title}
       disabled={isDisabled}
       aria-busy={loading}

@@ -1536,3 +1536,164 @@ export function smartFilterAndRankItems<
   return [...exactMatches, ...containsMatches];
 }
 
+// ============================================================================
+// EXACT DECIMAL ARITHMETIC (PREVENT IEEE-754 0.1 + 0.2 !== 0.3 DRIFT)
+// ============================================================================
+export function roundCurrency2(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+export function exactAdd(a: number, b: number): number {
+  return roundCurrency2((Number(a) || 0) + (Number(b) || 0));
+}
+
+export function exactSub(a: number, b: number): number {
+  return roundCurrency2((Number(a) || 0) - (Number(b) || 0));
+}
+
+export function exactMul(a: number, b: number): number {
+  return roundCurrency2((Number(a) || 0) * (Number(b) || 0));
+}
+
+export function exactDiv(a: number, b: number): number {
+  if (!Number.isFinite(b) || b === 0) return 0;
+  return roundCurrency2((Number(a) || 0) / b);
+}
+
+// ============================================================================
+// TIME-MACHINE SNAPSHOT CHECKSUM & DIFF ENGINE
+// ============================================================================
+export function computeSnapshotChecksum(params: {
+  accounts: { code: string; balance: number }[];
+  salesInvoices: { id: string; totalAmount: number; docstatus: number }[];
+  purchaseInvoices: { id: string; totalAmount: number; docstatus: number }[];
+  inventoryItems: { sku: string; stockQty: number; valuationRate: number }[];
+}): string {
+  const payload = [
+    params.accounts.map((a) => `${a.code}:${Math.round(a.balance)}`).join('|'),
+    params.salesInvoices.map((s) => `${s.id}:${Math.round(s.totalAmount)}:${s.docstatus}`).join('|'),
+    params.purchaseInvoices.map((p) => `${p.id}:${Math.round(p.totalAmount)}:${p.docstatus}`).join('|'),
+    params.inventoryItems.map((i) => `${i.sku}:${i.stockQty}:${Math.round(i.valuationRate)}`).join('|'),
+  ].join('~');
+
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < payload.length; i++) {
+    hash ^= payload.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `CHK-${(hash >>> 0).toString(16).toUpperCase().padStart(8, '0')}`;
+}
+
+export interface SnapshotDiffResult {
+  snapshotChecksum: string;
+  currentChecksum: string;
+  isIdentical: boolean;
+  salesInvoiceCountDiff: number;
+  purchaseInvoiceCountDiff: number;
+  salesTotalDiff: number;
+  purchaseTotalDiff: number;
+  skuChanges: {
+    sku: string;
+    name: string;
+    snapshotQty: number;
+    currentQty: number;
+    diffQty: number;
+  }[];
+  accountChanges: {
+    code: string;
+    name: string;
+    snapshotBalance: number;
+    currentBalance: number;
+    diffBalance: number;
+  }[];
+}
+
+export function computeSnapshotDiff(
+  snapshot: {
+    checksum: string;
+    accounts: { code: string; name: string; balance: number }[];
+    salesInvoices: { id: string; totalAmount: number; docstatus: number }[];
+    purchaseInvoices: { id: string; totalAmount: number; docstatus: number }[];
+    inventoryItems: { sku: string; name: string; stockQty: number; valuationRate: number }[];
+  },
+  current: {
+    accounts: { code: string; name: string; balance: number }[];
+    salesInvoices: { id: string; totalAmount: number; docstatus: number }[];
+    purchaseInvoices: { id: string; totalAmount: number; docstatus: number }[];
+    inventoryItems: { sku: string; name: string; stockQty: number; valuationRate: number }[];
+  }
+): SnapshotDiffResult {
+  const currentChecksum = computeSnapshotChecksum(current);
+  const snapSalesActive = snapshot.salesInvoices.filter((s) => s.docstatus !== 2);
+  const currSalesActive = current.salesInvoices.filter((s) => s.docstatus !== 2);
+  const snapPurchActive = snapshot.purchaseInvoices.filter((p) => p.docstatus !== 2);
+  const currPurchActive = current.purchaseInvoices.filter((p) => p.docstatus !== 2);
+
+  const snapSalesSum = snapSalesActive.reduce((s, i) => s + i.totalAmount, 0);
+  const currSalesSum = currSalesActive.reduce((s, i) => s + i.totalAmount, 0);
+  const snapPurchSum = snapPurchActive.reduce((s, i) => s + i.totalAmount, 0);
+  const currPurchSum = currPurchActive.reduce((s, i) => s + i.totalAmount, 0);
+
+  const skuMap = new Map<string, { name: string; snapQty: number; currQty: number }>();
+  for (const item of snapshot.inventoryItems) {
+    skuMap.set(item.sku, { name: item.name, snapQty: item.stockQty, currQty: 0 });
+  }
+  for (const item of current.inventoryItems) {
+    const ex = skuMap.get(item.sku);
+    if (ex) {
+      ex.currQty = item.stockQty;
+    } else {
+      skuMap.set(item.sku, { name: item.name, snapQty: 0, currQty: item.stockQty });
+    }
+  }
+
+  const skuChanges: SnapshotDiffResult['skuChanges'] = [];
+  for (const [sku, val] of skuMap.entries()) {
+    const diffQty = exactSub(val.currQty, val.snapQty);
+    if (diffQty !== 0) {
+      skuChanges.push({
+        sku,
+        name: val.name,
+        snapshotQty: val.snapQty,
+        currentQty: val.currQty,
+        diffQty,
+      });
+    }
+  }
+
+  const accChanges: SnapshotDiffResult['accountChanges'] = [];
+  const snapAccMap = new Map(snapshot.accounts.map((a) => [a.code, a]));
+  for (const acc of current.accounts) {
+    const snapAcc = snapAccMap.get(acc.code);
+    const snapBal = snapAcc ? snapAcc.balance : 0;
+    const diffBal = Math.round(acc.balance - snapBal);
+    if (diffBal !== 0) {
+      accChanges.push({
+        code: acc.code,
+        name: acc.name,
+        snapshotBalance: snapBal,
+        currentBalance: acc.balance,
+        diffBalance: diffBal,
+      });
+    }
+  }
+
+  return {
+    snapshotChecksum: snapshot.checksum,
+    currentChecksum,
+    isIdentical:
+      snapshot.checksum === currentChecksum &&
+      skuChanges.length === 0 &&
+      accChanges.length === 0 &&
+      currSalesActive.length === snapSalesActive.length,
+    salesInvoiceCountDiff: currSalesActive.length - snapSalesActive.length,
+    purchaseInvoiceCountDiff: currPurchActive.length - snapPurchActive.length,
+    salesTotalDiff: currSalesSum - snapSalesSum,
+    purchaseTotalDiff: currPurchSum - snapPurchSum,
+    skuChanges,
+    accountChanges: accChanges,
+  };
+}
+
+

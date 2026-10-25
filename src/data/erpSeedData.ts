@@ -481,6 +481,43 @@ export interface AuditLogRecord {
   newValue: string;
 }
 
+export interface StockLedgerEntryRecord {
+  id: string;
+  postingDate: string;
+  sku: string;
+  itemName: string;
+  warehouseKey: WarehouseKey;
+  qtyChange: number;
+  balanceAfter: number;
+  valuationRate: number;
+  voucherType: 'POS Invoice' | 'Purchase Receipt' | 'Sales Return' | 'Stock Transfer' | 'Void Reversal' | 'Service Consumable';
+  voucherNo: string;
+  sector?: 'vape' | 'pc';
+}
+
+export interface TimeMachineSnapshotRecord {
+  id: string;
+  versionCode: string;
+  timestamp: string;
+  backupType: 'دستی (Manual)' | 'ایمپورت فایل (Import)' | 'حفاظتی خودکار (Protective)';
+  label: string;
+  checksum: string;
+  invoiceCount: number;
+  skuCount: number;
+  totalAssets: number;
+  accounts: AccountNode[];
+  glEntries: GLEntryRecord[];
+  journalEntries: JournalEntryRecord[];
+  salesInvoices: SalesInvoiceRecord[];
+  purchaseInvoices: PurchaseInvoiceRecord[];
+  inventoryItems: InventoryItemRecord[];
+  customerContacts: CustomerContactRecord[];
+  shareholders: ShareholderRecord[];
+  shareholderSnapshots?: ShareholderRuleSnapshot[];
+  monthlyExpenseLedger?: MonthlyExpenseLedgerRecord[];
+  stockLedgerEntries?: StockLedgerEntryRecord[];
+}
+
 export const DEFAULT_BRANCH_NAME = 'فروشگاه مرکزی کلودی شاپ';
 
 export const INITIAL_WAREHOUSES: WarehouseRecord[] = [
@@ -719,3 +756,5 @@ export const INITIAL_FIXED_ASSETS: FixedAssetRecord[] = []; // Empty by default 
 export const INITIAL_INVENTORY_ITEMS: InventoryItemRecord[] = [];
 export const INITIAL_CRM_LEADS: CrmLeadRecord[] = [];
 export const INITIAL_AUDIT_LOGS: AuditLogRecord[] = [];
+export const INITIAL_STOCK_LEDGER_ENTRIES: StockLedgerEntryRecord[] = [];
+
