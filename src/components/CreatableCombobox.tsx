@@ -1,5 +1,217 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Plus, ChevronDown, Check } from 'lucide-react';
+import { Plus, ChevronDown, Check, Loader2, X } from 'lucide-react';
+
+// ============================================================================
+// SHOPIFY POLARIS CORE PRIMITIVES (Button, ButtonGroup, Collapsible, Sheet)
+// ============================================================================
+
+export interface PolarisButtonProps {
+  children: React.ReactNode;
+  onClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  type?: 'button' | 'submit' | 'reset';
+  primary?: boolean;
+  destructive?: boolean;
+  outline?: boolean;
+  plain?: boolean;
+  loading?: boolean;
+  disabled?: boolean;
+  fullWidth?: boolean;
+  size?: 'slim' | 'medium' | 'large';
+  icon?: React.ReactNode;
+  title?: string;
+  className?: string;
+}
+
+export const PolarisButton: React.FC<PolarisButtonProps> = ({
+  children,
+  onClick,
+  type = 'button',
+  primary = false,
+  destructive = false,
+  outline = false,
+  plain = false,
+  loading = false,
+  disabled = false,
+  fullWidth = false,
+  size = 'medium',
+  icon,
+  title,
+  className = '',
+}) => {
+  const isDisabled = disabled || loading;
+
+  const sizeClasses =
+    size === 'slim'
+      ? 'px-2.5 py-1 text-xs'
+      : size === 'large'
+        ? 'px-5 py-2.5 text-xs'
+        : 'px-3.5 py-2 text-xs';
+
+  let variantClasses =
+    'bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 shadow-2xs';
+
+  if (destructive) {
+    variantClasses = outline
+      ? 'bg-white dark:bg-slate-900 text-rose-600 border border-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40'
+      : 'bg-rose-600 text-white border border-rose-700 hover:bg-rose-700 shadow-2xs';
+  } else if (primary) {
+    variantClasses =
+      'bg-slate-900 dark:bg-indigo-600 text-white border border-slate-950 dark:border-indigo-500 hover:bg-slate-800 dark:hover:bg-indigo-700 shadow-2xs';
+  } else if (plain) {
+    variantClasses =
+      'bg-transparent text-indigo-600 dark:text-indigo-400 border-transparent hover:underline shadow-none px-1.5 py-1';
+  }
+
+  return (
+    <button
+      type={type}
+      title={title}
+      disabled={isDisabled}
+      aria-busy={loading}
+      onClick={(e) => {
+        if (isDisabled) {
+          e.preventDefault();
+          return;
+        }
+        onClick?.(e);
+      }}
+      className={`inline-flex items-center justify-center gap-1.5 font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0 focus-visible:outline-2 focus-visible:outline-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed ${sizeClasses} ${variantClasses} ${
+        fullWidth ? 'w-full' : ''
+      } ${className}`}
+    >
+      {loading ? (
+        <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+      ) : (
+        icon && <span className="shrink-0">{icon}</span>
+      )}
+      <span>{children}</span>
+    </button>
+  );
+};
+
+export interface PolarisButtonGroupProps {
+  children: React.ReactNode;
+  segmented?: boolean;
+  fullWidth?: boolean;
+  className?: string;
+}
+
+export const PolarisButtonGroup: React.FC<PolarisButtonGroupProps> = ({
+  children,
+  segmented = false,
+  fullWidth = false,
+  className = '',
+}) => {
+  return (
+    <div
+      role="group"
+      className={`inline-flex flex-wrap items-center ${
+        segmented
+          ? 'bg-slate-100 dark:bg-slate-800 p-1 rounded-lg border border-slate-200 dark:border-slate-700 gap-1'
+          : 'gap-2'
+      } ${fullWidth ? 'w-full' : ''} ${className}`}
+    >
+      {children}
+    </div>
+  );
+};
+
+export interface PolarisCollapsibleProps {
+  id: string;
+  open: boolean;
+  children: React.ReactNode;
+  className?: string;
+}
+
+export const PolarisCollapsible: React.FC<PolarisCollapsibleProps> = ({
+  id,
+  open,
+  children,
+  className = '',
+}) => {
+  if (!open) {
+    return <div id={id} aria-hidden="true" className="hidden" />;
+  }
+  return (
+    <div
+      id={id}
+      aria-hidden="false"
+      className={`overflow-hidden transition-opacity duration-150 opacity-100 ${className}`}
+    >
+      {children}
+    </div>
+  );
+};
+
+export interface PolarisSheetProps {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  accessibilityLabel?: string;
+  children: React.ReactNode;
+  footer?: React.ReactNode;
+}
+
+export const PolarisSheet: React.FC<PolarisSheetProps> = ({
+  open,
+  onClose,
+  title,
+  accessibilityLabel,
+  children,
+  footer,
+}) => {
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={accessibilityLabel || title}
+      className="fixed inset-0 z-50 flex justify-end bg-slate-900/40 backdrop-blur-2xs transition-opacity"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="w-full max-w-md bg-white dark:bg-slate-900 h-full shadow-2xl border-r border-slate-200 dark:border-slate-800 flex flex-col justify-between text-right">
+        {/* Sheet Header */}
+        <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+          <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">{title}</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="بستن پنل"
+            className="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Sheet Body */}
+        <div className="p-5 overflow-y-auto flex-1 space-y-4 text-xs">{children}</div>
+
+        {/* Sheet Footer */}
+        {footer && (
+          <div className="px-5 py-3.5 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/80 flex items-center justify-end gap-2">
+            {footer}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ============================================================================
+// SHOPIFY POLARIS AUTOCOMPLETE + POPOVER (CREATABLE COMBOBOX)
+// ============================================================================
 
 interface CreatableComboboxProps {
   label?: string;
@@ -7,6 +219,8 @@ interface CreatableComboboxProps {
   onChange: (newValue: string) => void;
   options: string[];
   onAddNewOption?: (newOption: string) => void;
+  onPlusButtonClick?: () => void;
+  plusButtonTitle?: string;
   placeholder?: string;
   disabled?: boolean;
   className?: string;
@@ -18,12 +232,15 @@ export const CreatableCombobox: React.FC<CreatableComboboxProps> = ({
   onChange,
   options,
   onAddNewOption,
+  onPlusButtonClick,
+  plusButtonTitle,
   placeholder = 'جستجو یا تایپ مورد جدید...',
   disabled = false,
   className = '',
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState(value || '');
+  const [activeIndex, setActiveIndex] = useState<number>(-1);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -34,6 +251,7 @@ export const CreatableCombobox: React.FC<CreatableComboboxProps> = ({
     const handleClickOutside = (event: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
         setIsOpen(false);
+        setActiveIndex(-1);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -57,6 +275,7 @@ export const CreatableCombobox: React.FC<CreatableComboboxProps> = ({
     onChange(candidate);
     setQuery(candidate);
     setIsOpen(false);
+    setActiveIndex(-1);
   };
 
   return (
@@ -70,6 +289,9 @@ export const CreatableCombobox: React.FC<CreatableComboboxProps> = ({
         <div className="relative flex-1">
           <input
             type="text"
+            role="combobox"
+            aria-expanded={isOpen}
+            aria-autocomplete="list"
             disabled={disabled}
             value={query}
             placeholder={placeholder}
@@ -78,13 +300,39 @@ export const CreatableCombobox: React.FC<CreatableComboboxProps> = ({
               setQuery(e.target.value);
               onChange(e.target.value);
               setIsOpen(true);
+              setActiveIndex(-1);
             }}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && e.shiftKey) {
+              if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setIsOpen(true);
+                setActiveIndex((prev) =>
+                  prev + 1 < filteredOptions.length ? prev + 1 : 0
+                );
+              } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setIsOpen(true);
+                setActiveIndex((prev) =>
+                  prev - 1 >= 0 ? prev - 1 : Math.max(0, filteredOptions.length - 1)
+                );
+              } else if (e.key === 'Enter' && e.shiftKey) {
                 e.preventDefault();
                 handleCreateAndSelect();
+              } else if (e.key === 'Enter' && isOpen) {
+                if (activeIndex >= 0 && activeIndex < filteredOptions.length) {
+                  e.preventDefault();
+                  const chosen = filteredOptions[activeIndex];
+                  onChange(chosen);
+                  setQuery(chosen);
+                  setIsOpen(false);
+                  setActiveIndex(-1);
+                } else if (query.trim() && !exactExists) {
+                  e.preventDefault();
+                  handleCreateAndSelect();
+                }
               } else if (e.key === 'Escape') {
                 setIsOpen(false);
+                setActiveIndex(-1);
               }
             }}
             className="w-full px-3 py-1.5 pl-7 text-xs bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 disabled:opacity-50 disabled:bg-slate-100 dark:disabled:bg-slate-800 focus:outline-none focus:border-indigo-500"
@@ -102,47 +350,66 @@ export const CreatableCombobox: React.FC<CreatableComboboxProps> = ({
         <button
           type="button"
           disabled={disabled}
-          title="افزودن به لیست جامع (Shift+Enter)"
+          title={plusButtonTitle || 'افزودن فوری مورد جدید (+)'}
           onClick={() => {
+            if (onPlusButtonClick) {
+              onPlusButtonClick();
+              return;
+            }
             if (query.trim() && !exactExists) {
               handleCreateAndSelect();
             } else {
               setIsOpen((prev) => !prev);
             }
           }}
-          className="px-2 py-1.5 text-xs font-bold bg-slate-100 dark:bg-slate-800 hover:bg-indigo-600 hover:text-white text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700 rounded-lg transition-colors shrink-0 disabled:opacity-40"
+          className="px-2 py-1.5 text-xs font-bold bg-slate-100 dark:bg-slate-800 hover:bg-slate-900 hover:text-white dark:hover:bg-indigo-600 text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700 rounded-lg transition-colors shrink-0 disabled:opacity-40"
         >
           <Plus className="w-3.5 h-3.5" />
         </button>
       </div>
 
+      {/* Polaris Popover + Listbox */}
       {isOpen && !disabled && (
-        <div className="absolute z-40 mt-1 w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg max-h-48 overflow-y-auto text-xs divide-y divide-slate-100 dark:divide-slate-800">
-          {filteredOptions.map((opt) => (
+        <div
+          role="listbox"
+          className="absolute z-40 mt-1 w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg max-h-48 overflow-y-auto text-xs divide-y divide-slate-100 dark:divide-slate-800"
+        >
+          {/* Polaris Autocomplete actionBefore: Creatable Immediate Action */}
+          {query.trim() && !exactExists && (
+            <button
+              type="button"
+              onClick={() => handleCreateAndSelect()}
+              className="w-full px-3 py-2 text-right bg-indigo-50/90 dark:bg-indigo-950/70 hover:bg-indigo-100 text-indigo-700 dark:text-indigo-300 font-semibold flex items-center justify-between gap-2"
+            >
+              <span className="flex items-center gap-1.5">
+                <Plus className="w-3.5 h-3.5 shrink-0" />
+                <span>افزودن فوری «{query.trim()}»</span>
+              </span>
+              <span className="text-[10px] font-mono opacity-75">Enter</span>
+            </button>
+          )}
+          {filteredOptions.map((opt, idx) => (
             <button
               key={opt}
               type="button"
+              role="option"
+              aria-selected={value === opt}
               onClick={() => {
                 onChange(opt);
                 setQuery(opt);
                 setIsOpen(false);
+                setActiveIndex(-1);
               }}
-              className="w-full px-3 py-2 text-right hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center justify-between text-slate-800 dark:text-slate-200"
+              className={`w-full px-3 py-2 text-right flex items-center justify-between text-slate-800 dark:text-slate-200 ${
+                idx === activeIndex
+                  ? 'bg-indigo-50 dark:bg-slate-800 font-semibold'
+                  : 'hover:bg-slate-50 dark:hover:bg-slate-800'
+              }`}
             >
               <span>{opt}</span>
               {value === opt && <Check className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
             </button>
           ))}
-          {query.trim() && !exactExists && (
-            <button
-              type="button"
-              onClick={() => handleCreateAndSelect()}
-              className="w-full px-3 py-2 text-right bg-indigo-50/80 dark:bg-indigo-950/60 hover:bg-indigo-100 text-indigo-700 dark:text-indigo-300 font-semibold flex items-center justify-between gap-2"
-            >
-              <span>+ افزودن «{query.trim()}» به لیست جامع</span>
-              <span className="text-[10px] font-mono opacity-75">Shift+Enter</span>
-            </button>
-          )}
           {filteredOptions.length === 0 && !query.trim() && (
             <div className="px-3 py-2 text-slate-400 text-center">موردی یافت نشد</div>
           )}

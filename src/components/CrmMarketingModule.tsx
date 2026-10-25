@@ -9,8 +9,6 @@ import {
   Plus,
   Eye,
   EyeOff,
-  ChevronDown,
-  ChevronLeft,
   Upload,
   Send,
 } from 'lucide-react';
@@ -23,6 +21,12 @@ import {
   BulkSmsContactRecord,
 } from '../data/erpSeedData';
 import { formatCurrency } from '../utils/erpEngine';
+import {
+  PolarisButton,
+  PolarisButtonGroup,
+  PolarisCollapsible,
+  PolarisSheet,
+} from './CreatableCombobox';
 
 interface CrmMarketingModuleProps {
   leads: CrmLeadRecord[];
@@ -67,8 +71,9 @@ export const CrmMarketingModule: React.FC<CrmMarketingModuleProps> = ({
   const [expandedContactIds, setExpandedContactIds] = useState<Record<string, boolean>>({});
   const [revealedProfitIds, setRevealedProfitIds] = useState<Record<string, boolean>>({});
 
-  // New Contact / Reseller / Supplier Form State
-  const [showNewContactModal, setShowNewContactModal] = useState(false);
+  // Polaris Sheet 1: New Contact / Reseller / Supplier (Closed by default, opens via +)
+  const [isContactSheetOpen, setIsContactSheetOpen] = useState(false);
+  const [isSavingContact, setIsSavingContact] = useState(false);
   const [cName, setCName] = useState('');
   const [cPhone, setCPhone] = useState('');
   const [cCategory, setCCategory] = useState<'customer' | 'reseller' | 'supplier'>('customer');
@@ -77,21 +82,24 @@ export const CrmMarketingModule: React.FC<CrmMarketingModuleProps> = ({
   const [cTelegram, setCTelegram] = useState('');
   const [cProfession, setCProfession] = useState('');
 
-  // Marketing Lead Form State
+  // Polaris Sheet 2: New Marketing Lead (Closed by default, opens via +)
+  const [isLeadSheetOpen, setIsLeadSheetOpen] = useState(false);
+  const [isSavingLead, setIsSavingLead] = useState(false);
   const [leadName, setLeadName] = useState('');
   const [leadPhone, setLeadPhone] = useState('');
   const [leadSource, setLeadSource] = useState<CrmLeadRecord['source']>('اینستاگرام');
   const [leadCampaign, setLeadCampaign] = useState('کمپین معرفی طعم‌های جدید');
   const [leadStyle, setLeadStyle] = useState<CrmLeadRecord['interestStyle']>('سبک MTL (سیگاری)');
 
-  // Bulk SMS Pool State
+  // Polaris Collapsible: Bulk SMS Import Form (Closed by default)
+  const [isBulkImportCollapsibleOpen, setIsBulkImportCollapsibleOpen] = useState(false);
+  const [isSendingBulkSms, setIsSendingBulkSms] = useState(false);
   const [bulkRawInput, setBulkRawInput] = useState('');
   const [bulkGroupTag, setBulkGroupTag] = useState('ایمپورت تبلیغاتی ویپ‌شاپ');
   const [smsMessageText, setSmsMessageText] = useState(
     'فروشگاه مرکزی کلودی شاپ: شارژ مجدد سالت و جویس‌های اورجینال با تخفیف جشنواره!'
   );
 
-  // Classify contacts into customer / reseller / supplier
   const enrichedContacts = useMemo(() => {
     return contacts.map((contact) => {
       const roleLower = (contact.role || '').toLowerCase();
@@ -117,7 +125,6 @@ export const CrmMarketingModule: React.FC<CrmMarketingModuleProps> = ({
         }
       }
 
-      // Compute live invoices & financials for this contact
       const custInvoices = salesInvoices.filter(
         (inv) =>
           inv.docstatus === 1 &&
@@ -136,8 +143,8 @@ export const CrmMarketingModule: React.FC<CrmMarketingModuleProps> = ({
 
       let totalPurchasesAmount = contact.manualTotalPurchases || 0;
       let customerNetProfit = contact.manualNetProfit || 0;
-      let debitBalance = contact.debitBalance || 0; // بدهکار به ما
-      let creditBalance = contact.creditBalance || 0; // طلبکار از ما (بستانکار)
+      let debitBalance = contact.debitBalance || 0;
+      let creditBalance = contact.creditBalance || 0;
 
       for (const inv of custInvoices) {
         const isReturn = Boolean(inv.returnAgainst);
@@ -160,7 +167,6 @@ export const CrmMarketingModule: React.FC<CrmMarketingModuleProps> = ({
         }
       }
 
-      // For suppliers: Trade Payables (بدهی تجاری ما به تأمین‌کننده)
       for (const bill of suppBills) {
         const isDebitReturn = Boolean(bill.returnAgainst);
         if (!isDebitReturn) {
@@ -172,7 +178,6 @@ export const CrmMarketingModule: React.FC<CrmMarketingModuleProps> = ({
         }
       }
 
-      // Referral count
       const referredCount = salesInvoices.filter(
         (inv) =>
           inv.docstatus === 1 &&
@@ -213,9 +218,9 @@ export const CrmMarketingModule: React.FC<CrmMarketingModuleProps> = ({
     });
   }, [enrichedContacts, activeTab, searchQuery]);
 
-  const handleSaveNewContact = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!cName.trim()) return;
+  const handleSaveNewContact = () => {
+    if (!cName.trim() || isSavingContact) return;
+    setIsSavingContact(true);
     const roleLabel =
       cCategory === 'reseller'
         ? 'همکار / ریسلر'
@@ -223,485 +228,345 @@ export const CrmMarketingModule: React.FC<CrmMarketingModuleProps> = ({
           ? 'تأمین‌کننده'
           : 'مشتری عادی';
 
-    onAddContact({
-      id: `crm-c-${Date.now()}`,
-      sourceCode: `CRM-${contacts.length + 201}`,
-      fullName: cName.trim(),
-      personType: 'حقیقی',
-      role: roleLabel,
-      contactCategory: cCategory,
-      phone: cPhone.trim(),
-      vapingStyle: cVapeStyle,
-      instagramId: cInstagram.trim(),
-      telegramId: cTelegram.trim(),
-      profession: cProfession.trim(),
-      notes: `${roleLabel} — ثبت‌شده در CRM`,
-    });
-    setCName('');
-    setCPhone('');
-    setCInstagram('');
-    setCTelegram('');
-    setCProfession('');
-    setShowNewContactModal(false);
-    onShowToast(`پروفایل «${cName.trim()}» (${roleLabel}) با موفقیت در CRM ثبت شد.`);
+    window.setTimeout(() => {
+      onAddContact({
+        id: `crm-c-${Date.now()}`,
+        sourceCode: `CRM-${contacts.length + 201}`,
+        fullName: cName.trim(),
+        personType: 'حقیقی',
+        role: roleLabel,
+        contactCategory: cCategory,
+        phone: cPhone.trim(),
+        vapingStyle: cVapeStyle,
+        instagramId: cInstagram.trim(),
+        telegramId: cTelegram.trim(),
+        profession: cProfession.trim(),
+        notes: `${roleLabel} — ثبت‌شده در CRM`,
+      });
+      setCName('');
+      setCPhone('');
+      setCInstagram('');
+      setCTelegram('');
+      setCProfession('');
+      setIsSavingContact(false);
+      setIsContactSheetOpen(false);
+    }, 120);
+  };
+
+  const handleSaveNewLead = () => {
+    if (!leadName.trim() || !leadPhone.trim() || isSavingLead) return;
+    setIsSavingLead(true);
+    window.setTimeout(() => {
+      onAddLead({
+        id: `lead-${Date.now()}`,
+        fullName: leadName.trim(),
+        phone: leadPhone.trim(),
+        source: leadSource,
+        campaignName: leadCampaign.trim(),
+        interestStyle: leadStyle,
+        stage: 'سرنخ جدید (Lead)',
+        probability: 45,
+        estimatedValue: 1850000,
+        loyaltyTier: 'نقره‌ای',
+        loyaltyPoints: 50,
+        clvAmount: 0,
+        lastPurchaseDaysAgo: 0,
+      });
+      setLeadName('');
+      setLeadPhone('');
+      setIsSavingLead(false);
+      setIsLeadSheetOpen(false);
+    }, 120);
   };
 
   const handleBulkSmsParseAndImport = () => {
     const rawTokens = bulkRawInput
-      .split(/[\n,;|\t]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
+      .split(/[\n,;،]+/)
+      .map((t) => t.trim())
+      .filter((t) => t.length >= 7);
 
     if (rawTokens.length === 0) {
-      onShowToast('لطفاً لیست شماره‌ها را وارد یا از فایل اکسل/CSV جای‌گذاری کنید.');
+      onShowToast('لطفاً حداقل یک شماره موبایل معتبر وارد کنید.');
       return;
     }
 
-    const parsed: BulkSmsContactRecord[] = rawTokens.map((line, i) => {
-      const parts = line.split(/[-:]/).map((p) => p.trim());
-      const phoneMatch = line.match(/09\d{9}|\+989\d{9}|۰۹[۰-۹]{9}/);
-      const phone = phoneMatch ? phoneMatch[0] : parts[0];
-      const name = parts.length > 1 ? parts[1] : `مخاطب انبوه #${bulkSmsPool.length + i + 1}`;
+    const created: BulkSmsContactRecord[] = rawTokens.map((token, idx) => {
+      const parts = token.split(/[-:]/).map((p) => p.trim());
+      const hasName = parts.length > 1;
       return {
-        id: `sms-${Date.now()}-${i}`,
-        phone,
-        fullName: name,
-        groupTag: bulkGroupTag || 'کمپین پیامکی',
-        importedAt: '۱۴۰۴/۰۸/۰۲',
+        id: `bsms-${Date.now()}-${idx}`,
+        phone: hasName ? parts[1] : parts[0],
+        fullName: hasName ? parts[0] : `شماره تبلیغاتی #${bulkSmsPool.length + idx + 1}`,
+        groupTag: bulkGroupTag.trim() || 'عمومی',
+        importedAt: '۱۴۰۴/۰۸/۱۴',
       };
     });
 
-    onImportBulkSmsNumbers(parsed);
+    onImportBulkSmsNumbers(created);
     setBulkRawInput('');
-    onShowToast(
-      `${parsed.length} شماره جدید با موفقیت در «استخر لید انبوه» ایمپورت شد (بدون شلوغ شدن لیست مشتریان مغازه).`
-    );
+    setIsBulkImportCollapsibleOpen(false);
   };
 
-  const sixTabs: { id: CrmSixTab; label: string; count: number; icon: React.ComponentType<{ className?: string }> }[] = [
-    { id: 'all_contacts', label: '۱. کل مخاطبین', count: enrichedContacts.length, icon: Users },
-    {
-      id: 'customers',
-      label: '۲. مشتریان عادی',
-      count: enrichedContacts.filter((c) => c.resolvedCategory === 'customer').length,
-      icon: UserCheck,
-    },
-    {
-      id: 'resellers',
-      label: '۳. همکاران / ریسلرها',
-      count: enrichedContacts.filter((c) => c.resolvedCategory === 'reseller').length,
-      icon: Briefcase,
-    },
-    {
-      id: 'suppliers',
-      label: '۴. تأمین‌کنندگان',
-      count: enrichedContacts.filter((c) => c.resolvedCategory === 'supplier').length,
-      icon: Truck,
-    },
-    { id: 'marketing_leads', label: '۵. استخر لید تبلیغات', count: leads.length, icon: Megaphone },
-    {
-      id: 'bulk_sms_pool',
-      label: '۶. استخر لید انبوه (SMS)',
-      count: bulkSmsPool.length,
-      icon: MessageSquare,
-    },
-  ];
-
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100">
-            ماژول جامع CRM (مشتریان، ریسلرها، تأمین‌کنندگان و استخرهای لید)
-          </h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            پروفایل کامل سبک ویپینگ، شبکه‌های اجتماعی، تراز بدهکاری/بستانکاری، سود خالص محرمانه و تاریخچه کشویی فاکتورها
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => setShowNewContactModal((prev) => !prev)}
-          className="inline-flex items-center gap-2 px-4 py-2 text-xs font-bold text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 shrink-0"
-        >
-          <Plus className="w-4 h-4" />
-          <span>ثبت مخاطب جدید (مشتری / ریسلر / تأمین‌کننده)</span>
-        </button>
-      </div>
-
-      {/* New Contact Form */}
-      {showNewContactModal && (
-        <form
-          onSubmit={handleSaveNewContact}
-          className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-indigo-200 dark:border-indigo-800 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end text-xs"
-        >
-          <div>
-            <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-              نام و نام خانوادگی / فروشگاه *
-            </label>
-            <input
-              type="text"
-              required
-              placeholder="مثلاً آرمان رضایی"
-              value={cName}
-              onChange={(e) => setCName(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"
-            />
-          </div>
-          <div>
-            <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-              شماره تماس
-            </label>
-            <input
-              type="text"
-              placeholder="0912..."
-              value={cPhone}
-              onChange={(e) => setCPhone(e.target.value)}
-              className="w-full px-3 py-2 font-mono border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"
-            />
-          </div>
-          <div>
-            <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-              نقش در سیستم (Role)
-            </label>
-            <select
-              value={cCategory}
-              onChange={(e) =>
-                setCCategory(e.target.value as 'customer' | 'reseller' | 'supplier')
-              }
-              className="w-full px-3 py-2 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"
-            >
-              <option value="customer">مشتری عادی (Customer)</option>
-              <option value="reseller">همکار / ریسلر (Reseller)</option>
-              <option value="supplier">تأمین‌کننده بار (Supplier)</option>
-            </select>
-          </div>
-          <div>
-            <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-              سبک ویپینگ / حوزه خرید
-            </label>
-            <input
-              type="text"
-              placeholder="سالت نیکوتین / پاد / قطعات کامپیوتر"
-              value={cVapeStyle}
-              onChange={(e) => setCVapeStyle(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"
-            />
-          </div>
-          <div>
-            <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-              آیدی اینستاگرام
-            </label>
-            <input
-              type="text"
-              placeholder="@username"
-              value={cInstagram}
-              onChange={(e) => setCInstagram(e.target.value)}
-              className="w-full px-3 py-2 font-mono border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"
-            />
-          </div>
-          <div>
-            <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-              آیدی تلگرام
-            </label>
-            <input
-              type="text"
-              placeholder="@telegram_id"
-              value={cTelegram}
-              onChange={(e) => setCTelegram(e.target.value)}
-              className="w-full px-3 py-2 font-mono border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"
-            />
-          </div>
-          <div>
-            <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-              حرفه و شغل
-            </label>
-            <input
-              type="text"
-              placeholder="مثلاً گیمر / مهندس نرم‌افزار / پخش‌کننده"
-              value={cProfession}
-              onChange={(e) => setCProfession(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"
-            />
-          </div>
-          <button
-            type="submit"
-            className="py-2 px-4 font-bold bg-slate-900 dark:bg-indigo-600 text-white rounded-lg hover:bg-slate-800"
+    <div className="space-y-4">
+      {/* Top Toolbar: Polaris Secondary Segmented ButtonGroup + (+) Sheet Trigger */}
+      <div className="bg-white dark:bg-slate-900 p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 flex flex-col xl:flex-row xl:items-center justify-between gap-3">
+        <PolarisButtonGroup segmented>
+          <PolarisButton
+            size="slim"
+            primary={activeTab === 'all_contacts'}
+            icon={<Users className="w-3.5 h-3.5" />}
+            onClick={() => setActiveTab('all_contacts')}
           >
-            ذخیره پروفایل در CRM
-          </button>
-        </form>
-      )}
+            همه مخاطبین ({enrichedContacts.length})
+          </PolarisButton>
+          <PolarisButton
+            size="slim"
+            primary={activeTab === 'customers'}
+            icon={<UserCheck className="w-3.5 h-3.5" />}
+            onClick={() => setActiveTab('customers')}
+          >
+            مشتریان ({enrichedContacts.filter((c) => c.resolvedCategory === 'customer').length})
+          </PolarisButton>
+          <PolarisButton
+            size="slim"
+            primary={activeTab === 'resellers'}
+            icon={<Briefcase className="w-3.5 h-3.5" />}
+            onClick={() => setActiveTab('resellers')}
+          >
+            ریسلرها ({enrichedContacts.filter((c) => c.resolvedCategory === 'reseller').length})
+          </PolarisButton>
+          <PolarisButton
+            size="slim"
+            primary={activeTab === 'suppliers'}
+            icon={<Truck className="w-3.5 h-3.5" />}
+            onClick={() => setActiveTab('suppliers')}
+          >
+            تأمین‌کنندگان ({enrichedContacts.filter((c) => c.resolvedCategory === 'supplier').length})
+          </PolarisButton>
+          <PolarisButton
+            size="slim"
+            primary={activeTab === 'marketing_leads'}
+            icon={<Megaphone className="w-3.5 h-3.5" />}
+            onClick={() => setActiveTab('marketing_leads')}
+          >
+            لیدهای بازاریابی ({leads.length})
+          </PolarisButton>
+          <PolarisButton
+            size="slim"
+            primary={activeTab === 'bulk_sms_pool'}
+            icon={<MessageSquare className="w-3.5 h-3.5" />}
+            onClick={() => setActiveTab('bulk_sms_pool')}
+          >
+            استخر پیامک ({bulkSmsPool.length})
+          </PolarisButton>
+        </PolarisButtonGroup>
 
-      {/* 6 Distinct Tabs Bar */}
-      <div className="flex flex-wrap items-center gap-1.5 p-1.5 bg-slate-200/70 dark:bg-slate-800 rounded-xl">
-        {sixTabs.map((t) => {
-          const Icon = t.icon;
-          const isActive = activeTab === t.id;
-          return (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setActiveTab(t.id)}
-              className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-bold rounded-lg transition-colors whitespace-nowrap ${
-                isActive
-                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-              }`}
+        <div className="flex items-center gap-2">
+          {activeTab === 'marketing_leads' ? (
+            <PolarisButton
+              size="slim"
+              primary
+              icon={<Plus className="w-3.5 h-3.5" />}
+              onClick={() => setIsLeadSheetOpen(true)}
             >
-              <Icon className="w-4 h-4 shrink-0" />
-              <span>{t.label}</span>
-              <span className="px-1.5 py-0.5 text-[10px] font-mono bg-slate-100 dark:bg-slate-800 rounded">
-                {t.count}
-              </span>
-            </button>
-          );
-        })}
+              ثبت لید بازاریابی جدید
+            </PolarisButton>
+          ) : (
+            <PolarisButton
+              size="slim"
+              primary
+              icon={<Plus className="w-3.5 h-3.5" />}
+              onClick={() => {
+                if (activeTab === 'resellers') setCCategory('reseller');
+                else if (activeTab === 'suppliers') setCCategory('supplier');
+                else setCCategory('customer');
+                setIsContactSheetOpen(true);
+              }}
+            >
+              ثبت مخاطب جدید
+            </PolarisButton>
+          )}
+        </div>
       </div>
 
-      {/* TABS 1, 2, 3, 4: CONTACTS / CUSTOMERS / RESELLERS / SUPPLIERS TABLE WITH EXPANDABLE DRAWER */}
+      {/* =====================================================================
+          TABS 1 TO 4: CONTACTS POLARIS INDEXTABLE + ROW-LEVEL COLLAPSIBLE
+         ===================================================================== */}
       {(activeTab === 'all_contacts' ||
         activeTab === 'customers' ||
         activeTab === 'resellers' ||
         activeTab === 'suppliers') && (
-        <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <input
               type="text"
-              placeholder="جستجو بر اساس نام، شماره تماس، سبک ویپینگ، اینستاگرام یا شغل..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="flex-1 px-3.5 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800"
+              placeholder="جستجوی نام، شماره تماس، آیدی اینستاگرام، شغل یا سبک ویپینگ..."
+              className="w-full sm:max-w-md px-3.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg"
             />
-            <div className="text-xs text-slate-500">
-              روی هر ردیف کلیک کنید تا تاریخچه کامل فاکتورها، اقلام و تراکنش‌ها به صورت کشویی باز شود.
-            </div>
+            <span className="text-xs text-slate-500">
+              نمایش {visibleContacts.length} رکورد در جدول فشرده (IndexTable)
+            </span>
           </div>
 
-          <div className="overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-xl">
-            <table className="w-full text-right text-xs border-collapse">
-              <thead className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700">
+          <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden max-h-[520px] overflow-y-auto overflow-x-auto">
+            <table className="w-full text-right border-collapse text-xs">
+              <thead className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-10">
                 <tr>
-                  <th className="py-2.5 px-3">نام و نقش</th>
-                  <th className="py-2.5 px-3">شماره تماس · شبکه‌ها</th>
-                  <th className="py-2.5 px-3">سبک ویپینگ · شغل</th>
-                  <th className="py-2.5 px-3 text-center">تعداد و جمع کل خرید</th>
-                  <th className="py-2.5 px-3 text-left">مانده بدهی (بدهکار)</th>
-                  <th className="py-2.5 px-3 text-left">مانده بستانکاری (طلبکار)</th>
-                  <th className="py-2.5 px-3 text-left">سود خالص حاصل از مشتری</th>
-                  <th className="py-2.5 px-3 text-center">ریز تراکنش‌ها</th>
+                  <th className="py-2 px-3">نام مخاطب</th>
+                  <th className="py-2 px-3">نقش</th>
+                  <th className="py-2 px-3">موبایل</th>
+                  <th className="py-2 px-3">سبک / مشخصات</th>
+                  <th className="py-2 px-3">تعداد فاکتور</th>
+                  <th className="py-2 px-3">مجموع خرید</th>
+                  <th className="py-2 px-3">سود خالص</th>
+                  <th className="py-2 px-3">بدهکار / بستانکار</th>
+                  <th className="py-2 px-3 text-center">سوابق</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {visibleContacts.map((c) => {
-                  const isExpanded = Boolean(expandedContactIds[c.id]);
-                  const isProfitRevealed = Boolean(revealedProfitIds[c.id]) && !privacyMasked;
-                  const roleBadgeText =
-                    c.resolvedCategory === 'reseller'
-                      ? 'ریسلر (همکار)'
-                      : c.resolvedCategory === 'supplier'
+                {visibleContacts.map((contact) => {
+                  const isExpanded = Boolean(expandedContactIds[contact.id]);
+                  const isProfitRevealed = Boolean(revealedProfitIds[contact.id]);
+                  const roleLabel =
+                    contact.resolvedCategory === 'reseller'
+                      ? 'همکار ریسلر'
+                      : contact.resolvedCategory === 'supplier'
                         ? 'تأمین‌کننده'
-                        : 'مشتری عادی';
+                        : 'مشتری';
 
                   return (
-                    <React.Fragment key={c.id}>
-                      <tr
-                        onClick={() =>
-                          setExpandedContactIds((prev) => ({
-                            ...prev,
-                            [c.id]: !prev[c.id],
-                          }))
-                        }
-                        className="hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer transition-colors"
-                      >
-                        <td className="py-3 px-3">
-                          <div className="font-bold text-slate-900 dark:text-slate-100">
-                            {c.fullName}
-                          </div>
-                          <div className="text-[11px] text-slate-500 mt-0.5">
-                            {roleBadgeText} · کد: {c.sourceCode}
-                            {c.referredCount > 0 && (
-                              <span className="mr-1.5 text-indigo-600 font-semibold">
-                                (معرف {c.referredCount} فاکتور)
-                              </span>
-                            )}
-                          </div>
+                    <React.Fragment key={contact.id}>
+                      <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                        <td className="py-2 px-3 font-bold text-slate-900 dark:text-slate-100">
+                          {contact.fullName}
                         </td>
-                        <td className="py-3 px-3 font-mono text-slate-700 dark:text-slate-300">
-                          <div dir="ltr" className="text-right">
-                            {c.phone || '—'}
-                          </div>
-                          <div className="text-[11px] text-slate-400">
-                            {c.instagramId && <span>IG: {c.instagramId} </span>}
-                            {c.telegramId && <span>· TG: {c.telegramId}</span>}
-                          </div>
+                        <td className="py-2 px-3 text-slate-600 dark:text-slate-400">
+                          {roleLabel}
                         </td>
-                        <td className="py-3 px-3 text-slate-600 dark:text-slate-400">
-                          <div>{c.vapingStyle || 'سالت و پاد (عمومی)'}</div>
-                          <div className="text-[11px] text-slate-400">{c.profession || '—'}</div>
+                        <td className="py-2 px-3 font-mono tabular-nums">
+                          {contact.phone || '—'}
                         </td>
-                        <td className="py-3 px-3 font-mono tabular-nums text-center">
-                          <div className="font-bold text-slate-900 dark:text-slate-100">
-                            {formatCurrency(c.totalPurchasesAmount)} ت
-                          </div>
-                          <div className="text-[11px] text-slate-500">{c.invoiceCount} فاکتور</div>
+                        <td className="py-2 px-3 text-slate-500">
+                          {contact.vapingStyle || '—'}
+                          {contact.instagramId ? ` · @${contact.instagramId}` : ''}
                         </td>
-                        <td className="py-3 px-3 font-mono tabular-nums text-left font-bold text-rose-600 dark:text-rose-400">
-                          {c.debitBalance > 0 ? `${formatCurrency(c.debitBalance)} ت` : '۰'}
+                        <td className="py-2 px-3 font-mono font-bold tabular-nums">
+                          {contact.invoiceCount}
                         </td>
-                        <td className="py-3 px-3 font-mono tabular-nums text-left font-bold text-emerald-700 dark:text-emerald-400">
-                          {c.creditBalance > 0 ? `${formatCurrency(c.creditBalance)} ت` : '۰'}
+                        <td className="py-2 px-3 font-mono font-bold tabular-nums">
+                          {formatCurrency(contact.totalPurchasesAmount)} ت
                         </td>
-                        <td
-                          className="py-3 px-3 font-mono tabular-nums text-left"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <div className="inline-flex items-center gap-1.5">
-                            <span className="font-bold text-indigo-700 dark:text-indigo-400">
-                              {isProfitRevealed
-                                ? `${formatCurrency(c.customerNetProfit)} ت`
+                        <td className="py-2 px-3 font-mono tabular-nums">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setRevealedProfitIds((prev) => ({
+                                ...prev,
+                                [contact.id]: !prev[contact.id],
+                              }))
+                            }
+                            className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400 font-bold"
+                          >
+                            <span>
+                              {isProfitRevealed && !privacyMasked
+                                ? `${formatCurrency(contact.customerNetProfit)} ت`
                                 : '****'}
                             </span>
-                            <button
-                              type="button"
-                              title="نمایش / مخفی‌سازی سود خالص مشتری"
-                              onClick={() =>
-                                setRevealedProfitIds((prev) => ({
-                                  ...prev,
-                                  [c.id]: !prev[c.id],
-                                }))
-                              }
-                              className="text-slate-400 hover:text-indigo-600"
-                            >
-                              {isProfitRevealed ? (
-                                <EyeOff className="w-3.5 h-3.5" />
-                              ) : (
-                                <Eye className="w-3.5 h-3.5" />
-                              )}
-                            </button>
-                          </div>
-                        </td>
-                        <td className="py-3 px-3 text-center">
-                          <span className="inline-flex items-center gap-1 text-indigo-600 font-semibold">
-                            <span>جزئیات</span>
-                            {isExpanded ? (
-                              <ChevronDown className="w-4 h-4" />
+                            {isProfitRevealed ? (
+                              <EyeOff className="w-3 h-3" />
                             ) : (
-                              <ChevronLeft className="w-4 h-4" />
+                              <Eye className="w-3 h-3" />
                             )}
-                          </span>
+                          </button>
+                        </td>
+                        <td className="py-2 px-3 font-mono tabular-nums">
+                          {contact.debitBalance > 0 ? (
+                            <span className="text-rose-600 font-bold">
+                              بدهکار: {formatCurrency(contact.debitBalance)}
+                            </span>
+                          ) : contact.creditBalance > 0 ? (
+                            <span className="text-emerald-700 font-bold">
+                              بستانکار: {formatCurrency(contact.creditBalance)}
+                            </span>
+                          ) : (
+                            <span className="text-slate-400">تسویه</span>
+                          )}
+                        </td>
+                        <td className="py-2 px-3 text-center">
+                          <PolarisButton
+                            size="slim"
+                            primary={isExpanded}
+                            icon={<Plus className="w-3 h-3" />}
+                            onClick={() =>
+                              setExpandedContactIds((prev) => ({
+                                ...prev,
+                                [contact.id]: !prev[contact.id],
+                              }))
+                            }
+                          >
+                            {isExpanded ? 'بستن' : 'فاکتورها'}
+                          </PolarisButton>
                         </td>
                       </tr>
 
-                      {/* Expandable Drawer Row: Full History of Invoices, Items & Financial Transactions */}
                       {isExpanded && (
-                        <tr className="bg-slate-50/90 dark:bg-slate-800/40">
-                          <td colSpan={8} className="p-4 space-y-3">
-                            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-700 pb-2">
-                              <span className="font-bold text-slate-900 dark:text-slate-100">
-                                ریز تاریخچه فاکتورها، اقلام خریداری‌شده و تراکنش‌های مالی «{c.fullName}»
-                              </span>
-                              <span className="text-[11px] text-slate-500">{c.notes}</span>
-                            </div>
-
-                            {c.custInvoices.length === 0 &&
-                            c.suppBills.length === 0 &&
-                            c.partyPayments.length === 0 ? (
-                              <div className="text-xs text-slate-500 py-2">
-                                هنوز فاکتور یا تراکنش مالی برای این مخاطب ثبت نشده است.
-                              </div>
-                            ) : (
-                              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                                <div className="space-y-2">
-                                  <div className="font-bold text-slate-700 dark:text-slate-300">
-                                    فاکتورهای فروش / خرید ({c.custInvoices.length + c.suppBills.length})
-                                  </div>
-                                  <div className="space-y-1.5 max-h-48 overflow-y-auto">
-                                    {c.custInvoices.map((inv) => (
-                                      <div
-                                        key={inv.id}
-                                        className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-2"
-                                      >
-                                        <div>
-                                          <div className="font-mono font-bold text-indigo-700 dark:text-indigo-400">
-                                            {inv.invoiceNo} · {inv.date}
-                                          </div>
-                                          <div className="text-[11px] text-slate-600 dark:text-slate-400">
-                                            {inv.itemsSummary}
-                                          </div>
-                                        </div>
-                                        <div className="text-left font-mono">
-                                          <div className="font-bold">
-                                            {formatCurrency(inv.totalAmount)} ت
-                                          </div>
-                                          <div className="text-[10px] text-slate-500">
-                                            پرداختی: {formatCurrency(inv.paidAmount)} ت
-                                          </div>
-                                        </div>
-                                      </div>
-                                    ))}
-                                    {c.suppBills.map((bill) => (
-                                      <div
-                                        key={bill.id}
-                                        className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-amber-200 dark:border-amber-800 flex items-center justify-between gap-2"
-                                      >
-                                        <div>
-                                          <div className="font-mono font-bold text-amber-700">
-                                            فاکتور خرید {bill.billNo} · {bill.date}
-                                          </div>
-                                          <div className="text-[11px] text-slate-600">
-                                            {bill.itemsSummary} (سررسید: {bill.settlementDueDate || 'نقد'})
-                                          </div>
-                                        </div>
-                                        <div className="text-left font-mono">
-                                          <div className="font-bold">
-                                            {formatCurrency(bill.totalAmount)} ت
-                                          </div>
-                                          <div className="text-[10px] text-rose-600">
-                                            مانده بدهی تجاری:{' '}
-                                            {formatCurrency(
-                                              Math.max(0, bill.totalAmount - (bill.paidAmount || 0))
-                                            )}{' '}
-                                            ت
-                                          </div>
-                                        </div>
-                                      </div>
-                                    ))}
-                                  </div>
+                        <tr className="bg-slate-50/90 dark:bg-slate-800/50">
+                          <td colSpan={9} className="p-3 border-b border-slate-200 dark:border-slate-700">
+                            <PolarisCollapsible
+                              id={`crm-contact-collapsible-${contact.id}`}
+                              open={isExpanded}
+                            >
+                              {contact.custInvoices.length === 0 &&
+                              contact.suppBills.length === 0 ? (
+                                <div className="text-slate-400 text-center py-2">
+                                  هنوز فاکتوری برای این مخاطب ثبت نشده است.
                                 </div>
-
-                                <div className="space-y-2">
-                                  <div className="font-bold text-slate-700 dark:text-slate-300">
-                                    اسناد تسویه و دریافت/پرداخت ({c.partyPayments.length})
-                                  </div>
-                                  <div className="space-y-1.5 max-h-48 overflow-y-auto">
-                                    {c.partyPayments.map((pe) => (
-                                      <div
-                                        key={pe.id}
-                                        className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 flex items-center justify-between"
-                                      >
-                                        <div>
-                                          <div className="font-mono font-semibold">
-                                            {pe.paymentNo} · {pe.postingDate}
-                                          </div>
-                                          <div className="text-[11px] text-slate-500">
-                                            {pe.paymentType} ({pe.modeOfPayment})
-                                          </div>
-                                        </div>
-                                        <div className="font-mono font-bold text-emerald-700">
-                                          {formatCurrency(pe.amount)} ت
-                                        </div>
+                              ) : (
+                                <div className="space-y-1.5">
+                                  {contact.custInvoices.map((inv) => (
+                                    <div
+                                      key={inv.id}
+                                      className="flex items-center justify-between py-1 px-2.5 bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700"
+                                    >
+                                      <div>
+                                        <span className="font-mono font-bold ml-2">
+                                          {inv.invoiceNo}
+                                        </span>
+                                        <span className="text-slate-500">{inv.date}</span>
+                                        <span className="mr-2 font-medium">
+                                          {inv.itemsSummary || 'فاکتور فروش'}
+                                        </span>
                                       </div>
-                                    ))}
-                                    {c.partyPayments.length === 0 && (
-                                      <div className="text-[11px] text-slate-400">
-                                        تسویه جداگانه‌ای خارج از فاکتور ثبت نشده است.
+                                      <span className="font-mono font-bold tabular-nums">
+                                        {formatCurrency(inv.totalAmount)} تومان
+                                      </span>
+                                    </div>
+                                  ))}
+                                  {contact.suppBills.map((bill) => (
+                                    <div
+                                      key={bill.id}
+                                      className="flex items-center justify-between py-1 px-2.5 bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700"
+                                    >
+                                      <div>
+                                        <span className="font-mono font-bold ml-2">
+                                          {bill.billNo}
+                                        </span>
+                                        <span className="text-slate-500">{bill.date}</span>
+                                        <span className="mr-2 font-medium">
+                                          {bill.itemsSummary || 'فاکتور خرید'}
+                                        </span>
                                       </div>
-                                    )}
-                                  </div>
+                                      <span className="font-mono font-bold tabular-nums">
+                                        {formatCurrency(bill.totalAmount)} ریال
+                                      </span>
+                                    </div>
+                                  ))}
                                 </div>
-                              </div>
-                            )}
+                              )}
+                            </PolarisCollapsible>
                           </td>
                         </tr>
                       )}
@@ -714,256 +579,351 @@ export const CrmMarketingModule: React.FC<CrmMarketingModuleProps> = ({
         </div>
       )}
 
-      {/* TAB 5: MARKETING LEADS POOL (استخر لید تبلیغات) */}
+      {/* =====================================================================
+          TAB 5: MARKETING LEADS POLARIS INDEXTABLE (Form closed by default in Sheet)
+         ===================================================================== */}
       {activeTab === 'marketing_leads' && (
-        <div className="bg-white dark:bg-slate-900 p-6 rounded-xl border border-slate-200 dark:border-slate-800 space-y-5">
-          <div>
-            <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">
-              استخر لید تبلیغات (سرنخ‌های ورودی از اینستاگرام، تلگرام و کمپین‌ها)
+        <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
+              جدول لیدهای بازاریابی و سرنخ‌های تبلیغاتی ({leads.length} مورد)
             </h3>
-            <p className="text-xs text-slate-500 mt-0.5">
-              ثبت و پیگیری سرنخ‌های تبلیغاتی پیش از تبدیل به مشتری قطعی مغازه
-            </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end text-xs bg-slate-50 dark:bg-slate-800/60 p-4 rounded-xl border border-slate-200 dark:border-slate-700">
-            <div>
-              <label className="block font-medium mb-1">نام سرنخ تبلیغاتی *</label>
-              <input
-                type="text"
-                placeholder="نام مخاطب پیج..."
-                value={leadName}
-                onChange={(e) => setLeadName(e.target.value)}
-                className="w-full px-3 py-1.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900"
-              />
-            </div>
-            <div>
-              <label className="block font-medium mb-1">شماره موبایل / آیدی</label>
-              <input
-                type="text"
-                placeholder="0912..."
-                value={leadPhone}
-                onChange={(e) => setLeadPhone(e.target.value)}
-                className="w-full px-3 py-1.5 font-mono border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900"
-              />
-            </div>
-            <div>
-              <label className="block font-medium mb-1">کانال ورودی</label>
-              <select
-                value={leadSource}
-                onChange={(e) => setLeadSource(e.target.value as CrmLeadRecord['source'])}
-                className="w-full px-2.5 py-1.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900"
-              >
-                <option value="اینستاگرام">دایرکت اینستاگرام</option>
-                <option value="تلگرام">کانال تلگرام</option>
-                <option value="کمپین اینفلوئنسر">کمپین اینفلوئنسر</option>
-                <option value="تماس تلفنی">تماس تلفنی</option>
-              </select>
-            </div>
-            <div>
-              <label className="block font-medium mb-1">سبک مورد علاقه</label>
-              <select
-                value={leadStyle}
-                onChange={(e) =>
-                  setLeadStyle(e.target.value as CrmLeadRecord['interestStyle'])
-                }
-                className="w-full px-2.5 py-1.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900"
-              >
-                <option value="سبک MTL (سیگاری)">سالت نیکوتین (MTL)</option>
-                <option value="سبک DTL (قلیانی)">جویس فری‌بیس (DTL)</option>
-                <option value="همکار عمده‌فروش">متقاضی خرید همکاری</option>
-              </select>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                if (!leadName.trim()) return;
-                onAddLead({
-                  id: `lead-${Date.now()}`,
-                  fullName: leadName.trim(),
-                  phone: leadPhone.trim(),
-                  source: leadSource,
-                  campaignName: leadCampaign,
-                  interestStyle: leadStyle,
-                  stage: 'سرنخ جدید (Lead)',
-                  probability: 50,
-                  estimatedValue: 0,
-                  loyaltyTier: 'برنزی',
-                  loyaltyPoints: 0,
-                  clvAmount: 0,
-                  lastPurchaseDaysAgo: 0,
-                });
-                setLeadName('');
-                setLeadPhone('');
-              }}
-              className="py-1.5 px-4 font-bold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
-            >
-              + افزودن به استخر تبلیغات
-            </button>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-right text-xs border-collapse">
-              <thead className="bg-slate-100 dark:bg-slate-800 text-slate-600">
+          <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden overflow-x-auto">
+            <table className="w-full text-right border-collapse text-xs">
+              <thead className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700">
                 <tr>
-                  <th className="py-2.5 px-3">نام سرنخ</th>
-                  <th className="py-2.5 px-3">شماره تماس</th>
-                  <th className="py-2.5 px-3">کانال · سبک</th>
-                  <th className="py-2.5 px-3">وضعیت پیگیری</th>
-                  <th className="py-2.5 px-3">عملیات</th>
+                  <th className="py-2 px-3">نام سرنخ</th>
+                  <th className="py-2 px-3">شماره تماس</th>
+                  <th className="py-2 px-3">کانال ورودی</th>
+                  <th className="py-2 px-3">کمپین</th>
+                  <th className="py-2 px-3">سبک مورد علاقه</th>
+                  <th className="py-2 px-3">مرحله</th>
+                  <th className="py-2 px-3 text-center">عملیات</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {leads.map((l) => (
-                  <tr key={l.id}>
-                    <td className="py-2.5 px-3 font-bold">{l.fullName}</td>
-                    <td className="py-2.5 px-3 font-mono">{l.phone}</td>
-                    <td className="py-2.5 px-3">
-                      {l.source} · {l.interestStyle}
-                    </td>
-                    <td className="py-2.5 px-3 font-semibold text-indigo-700">{l.stage}</td>
-                    <td className="py-2.5 px-3">
-                      <button
-                        type="button"
-                        onClick={() => onAdvanceLeadStage(l.id)}
-                        className="px-3 py-1 bg-slate-100 dark:bg-slate-800 rounded font-semibold hover:bg-slate-200"
-                      >
-                        ارتقای مرحله پیگیری ←
-                      </button>
+                {leads.map((lead) => (
+                  <tr key={lead.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                    <td className="py-2 px-3 font-bold">{lead.fullName}</td>
+                    <td className="py-2 px-3 font-mono tabular-nums">{lead.phone}</td>
+                    <td className="py-2 px-3">{lead.source}</td>
+                    <td className="py-2 px-3">{lead.campaignName || '—'}</td>
+                    <td className="py-2 px-3">{lead.interestStyle}</td>
+                    <td className="py-2 px-3 font-semibold text-indigo-600">{lead.stage}</td>
+                    <td className="py-2 px-3 text-center">
+                      {lead.stage !== 'مشتری وفادار' && (
+                        <PolarisButton
+                          size="slim"
+                          onClick={() => {
+                            onAdvanceLeadStage(lead.id);
+                            onAddContact({
+                              id: `conv-${Date.now()}`,
+                              sourceCode: `L-${contacts.length + 300}`,
+                              fullName: lead.fullName,
+                              personType: 'حقیقی',
+                              role: 'مشتری عادی',
+                              contactCategory: 'customer',
+                              phone: lead.phone,
+                              vapingStyle: lead.interestStyle,
+                              notes: `تبدیل‌شده از لید (${lead.source})`,
+                            });
+                          }}
+                        >
+                          تبدیل به مشتری
+                        </PolarisButton>
+                      )}
                     </td>
                   </tr>
                 ))}
-                {leads.length === 0 && (
-                  <tr>
-                    <td colSpan={5} className="py-8 text-center text-slate-400">
-                      هنوز سرنخ تبلیغاتی در این استخر ثبت نشده است.
-                    </td>
-                  </tr>
-                )}
               </tbody>
             </table>
           </div>
         </div>
       )}
 
-      {/* TAB 6: BULK SMS POOL (استخر لید انبوه با ایمپورت یکجای CSV/اکسل بدون شلوغ کردن لیست مشتریان مغازه) */}
+      {/* =====================================================================
+          TAB 6: BULK SMS POOL INDEXTABLE + COLLAPSIBLE IMPORT
+         ===================================================================== */}
       {activeTab === 'bulk_sms_pool' && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          <div className="lg:col-span-6 bg-white dark:bg-slate-900 p-6 rounded-xl border border-slate-200 dark:border-slate-800 space-y-4">
-            <div className="flex items-center gap-2">
-              <Upload className="w-5 h-5 text-indigo-600" />
-              <div>
-                <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">
-                  ایمپورت دسته‌جمعی شماره‌ها (استخر لید انبوه SMS)
-                </h3>
-                <p className="text-xs text-slate-500">
-                  ورود یکجای ۱۰۰۰+ شماره از اکسل/CSV صرفاً برای اس‌ام‌اس مارکتینگ، کاملاً ایزوله از لیست مشتریان مغازه
-                </p>
-              </div>
+        <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                استخر شماره‌های تبلیغاتی (Bulk SMS Pool — مجزا از مشتریان اصلی)
+              </h3>
             </div>
+            <PolarisButton
+              size="slim"
+              icon={<Upload className="w-3.5 h-3.5" />}
+              onClick={() => setIsBulkImportCollapsibleOpen((prev) => !prev)}
+            >
+              {isBulkImportCollapsibleOpen ? 'بستن فرم ایمپورت' : '+ ایمپورت دسته‌ای شماره‌ها'}
+            </PolarisButton>
+          </div>
 
-            <div className="space-y-3 text-xs">
+          <PolarisCollapsible
+            id="crm-bulk-import-collapsible"
+            open={isBulkImportCollapsibleOpen}
+            className="p-3.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 space-y-2.5 text-xs"
+          >
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 items-end">
               <div>
-                <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  برچسب دسته ایمپورت (Tag)
-                </label>
+                <label className="block font-medium mb-1">برچسب گروه تبلیغاتی</label>
                 <input
                   type="text"
                   value={bulkGroupTag}
                   onChange={(e) => setBulkGroupTag(e.target.value)}
-                  className="w-full px-3 py-1.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"
+                  className="w-full px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-300 rounded-lg"
                 />
               </div>
-
               <div>
-                <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  جای‌گذاری لیست شماره‌ها (هر خط یا با ویرگول جدا شده — مثلاً 09121112233)
-                </label>
-                <textarea
-                  rows={5}
-                  placeholder={'09121112233 - علی حسینی\n09123334455\n09351112233'}
+                <label className="block font-medium mb-1">لیست شماره‌ها (هر خط یک شماره)</label>
+                <input
+                  type="text"
                   value={bulkRawInput}
                   onChange={(e) => setBulkRawInput(e.target.value)}
-                  className="w-full p-3 font-mono border border-slate-300 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800"
+                  placeholder="09121112233, 09352223344..."
+                  className="w-full px-3 py-1.5 font-mono bg-white dark:bg-slate-900 border border-slate-300 rounded-lg"
                 />
               </div>
-
-              <button
-                type="button"
-                onClick={handleBulkSmsParseAndImport}
-                className="w-full py-2.5 px-4 font-bold bg-indigo-600 text-white rounded-xl hover:bg-indigo-700"
-              >
-                + ایمپورت یکجا به استخر لید انبوه
-              </button>
+              <PolarisButton primary size="slim" onClick={handleBulkSmsParseAndImport}>
+                افزودن به استخر پیامک
+              </PolarisButton>
             </div>
+          </PolarisCollapsible>
+
+          <div className="flex items-center gap-2 text-xs">
+            <input
+              type="text"
+              value={smsMessageText}
+              onChange={(e) => setSmsMessageText(e.target.value)}
+              className="flex-1 px-3 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 rounded-lg"
+            />
+            <PolarisButton
+              primary
+              size="slim"
+              loading={isSendingBulkSms}
+              disabled={isSendingBulkSms}
+              icon={<Send className="w-3.5 h-3.5" />}
+              onClick={() => {
+                setIsSendingBulkSms(true);
+                window.setTimeout(() => {
+                  setIsSendingBulkSms(false);
+                  onShowToast(
+                    `پیامک جشنواره برای ${bulkSmsPool.length} شماره در صف ارسال قرار گرفت.`
+                  );
+                }, 150);
+              }}
+            >
+              ارسال پیامک انبوه ({bulkSmsPool.length})
+            </PolarisButton>
           </div>
 
-          <div className="lg:col-span-6 bg-white dark:bg-slate-900 p-6 rounded-xl border border-slate-200 dark:border-slate-800 space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">
-                  بانک شماره‌های استخر انبوه ({bulkSmsPool.length} شماره)
-                </h3>
-                <p className="text-xs text-slate-500">آماده ارسال پیامک جشنواره و اطلاع‌رسانی</p>
-              </div>
-              <Send className="w-4 h-4 text-emerald-600" />
-            </div>
-
-            <div className="space-y-2 text-xs">
-              <label className="block font-medium">متن پیامک انبوه</label>
-              <textarea
-                rows={2}
-                value={smsMessageText}
-                onChange={(e) => setSmsMessageText(e.target.value)}
-                className="w-full p-2.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800"
-              />
-              <button
-                type="button"
-                onClick={() =>
-                  onShowToast(
-                    `پیامک جشنواره در صف ارسال برای ${bulkSmsPool.length} شماره در استخر لید انبوه قرار گرفت.`
-                  )
-                }
-                className="px-4 py-2 font-bold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
-              >
-                ارسال پیامک به کل استخر انبوه ({bulkSmsPool.length} نفر)
-              </button>
-            </div>
-
-            <div className="max-h-56 overflow-y-auto border border-slate-200 dark:border-slate-800 rounded-lg">
-              <table className="w-full text-right text-xs">
-                <thead className="bg-slate-100 dark:bg-slate-800 text-slate-600">
-                  <tr>
-                    <th className="py-2 px-3">شماره موبایل</th>
-                    <th className="py-2 px-3">نام</th>
-                    <th className="py-2 px-3">دسته / تگ</th>
-                    <th className="py-2 px-3">تاریخ ورود</th>
+          <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden max-h-80 overflow-y-auto">
+            <table className="w-full text-right border-collapse text-xs">
+              <thead className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700 sticky top-0">
+                <tr>
+                  <th className="py-2 px-3">شماره موبایل</th>
+                  <th className="py-2 px-3">عنوان</th>
+                  <th className="py-2 px-3">گروه تبلیغاتی</th>
+                  <th className="py-2 px-3">تاریخ ورود</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {bulkSmsPool.map((item) => (
+                  <tr key={item.id}>
+                    <td className="py-2 px-3 font-mono font-bold tabular-nums">{item.phone}</td>
+                    <td className="py-2 px-3">{item.fullName || '—'}</td>
+                    <td className="py-2 px-3 text-slate-500">{item.groupTag}</td>
+                    <td className="py-2 px-3 font-mono text-slate-400">{item.importedAt}</td>
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {bulkSmsPool.map((b) => (
-                    <tr key={b.id}>
-                      <td className="py-1.5 px-3 font-mono font-bold" dir="ltr">
-                        {b.phone}
-                      </td>
-                      <td className="py-1.5 px-3">{b.fullName}</td>
-                      <td className="py-1.5 px-3 text-slate-500">{b.groupTag}</td>
-                      <td className="py-1.5 px-3 font-mono text-slate-400">{b.importedAt}</td>
-                    </tr>
-                  ))}
-                  {bulkSmsPool.length === 0 && (
-                    <tr>
-                      <td colSpan={4} className="py-6 text-center text-slate-400">
-                        استخر لید انبوه خالی است؛ از کادر سمت راست شماره‌ها را ایمپورت کنید.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
+
+      {/* =====================================================================
+          POLARIS SHEET 1: NEW CONTACT / RESELLER / SUPPLIER (Closed by default)
+         ===================================================================== */}
+      <PolarisSheet
+        open={isContactSheetOpen}
+        onClose={() => setIsContactSheetOpen(false)}
+        title="ثبت پروفایل جدید در CRM (مشتری / ریسلر / تأمین‌کننده)"
+        footer={
+          <>
+            <PolarisButton onClick={() => setIsContactSheetOpen(false)}>انصراف</PolarisButton>
+            <PolarisButton
+              primary
+              loading={isSavingContact}
+              disabled={isSavingContact}
+              onClick={handleSaveNewContact}
+            >
+              ذخیره پروفایل در CRM
+            </PolarisButton>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <div>
+            <label className="block font-semibold mb-1">نام و نام خانوادگی / نام تجاری *</label>
+            <input
+              type="text"
+              autoFocus
+              value={cName}
+              onChange={(e) => setCName(e.target.value)}
+              placeholder="نام کامل..."
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white dark:bg-slate-900"
+            />
+          </div>
+          <div>
+            <label className="block font-semibold mb-1">شماره تماس</label>
+            <input
+              type="text"
+              value={cPhone}
+              onChange={(e) => setCPhone(e.target.value)}
+              placeholder="0912..."
+              className="w-full px-3 py-2 font-mono border border-slate-300 rounded-lg bg-white dark:bg-slate-900 tabular-nums"
+            />
+          </div>
+          <div>
+            <label className="block font-semibold mb-1">دسته‌بندی مخاطب</label>
+            <select
+              value={cCategory}
+              onChange={(e) =>
+                setCCategory(e.target.value as 'customer' | 'reseller' | 'supplier')
+              }
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white dark:bg-slate-900"
+            >
+              <option value="customer">مشتری عادی (خرده‌فروشی)</option>
+              <option value="reseller">همکار / ریسلر (عمده‌فروشی)</option>
+              <option value="supplier">تأمین‌کننده (فروشنده بار به ما)</option>
+            </select>
+          </div>
+          <div>
+            <label className="block font-semibold mb-1">سبک ویپینگ / حوزه فعالیت</label>
+            <input
+              type="text"
+              value={cVapeStyle}
+              onChange={(e) => setCVapeStyle(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white dark:bg-slate-900"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="block font-semibold mb-1">آیدی اینستاگرام</label>
+              <input
+                type="text"
+                value={cInstagram}
+                onChange={(e) => setCInstagram(e.target.value)}
+                placeholder="@id"
+                className="w-full px-3 py-2 font-mono border border-slate-300 rounded-lg bg-white dark:bg-slate-900"
+              />
+            </div>
+            <div>
+              <label className="block font-semibold mb-1">آیدی تلگرام</label>
+              <input
+                type="text"
+                value={cTelegram}
+                onChange={(e) => setCTelegram(e.target.value)}
+                placeholder="@id"
+                className="w-full px-3 py-2 font-mono border border-slate-300 rounded-lg bg-white dark:bg-slate-900"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block font-semibold mb-1">شغل / تخصص</label>
+            <input
+              type="text"
+              value={cProfession}
+              onChange={(e) => setCProfession(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white dark:bg-slate-900"
+            />
+          </div>
+        </div>
+      </PolarisSheet>
+
+      {/* =====================================================================
+          POLARIS SHEET 2: NEW MARKETING LEAD (Closed by default)
+         ===================================================================== */}
+      <PolarisSheet
+        open={isLeadSheetOpen}
+        onClose={() => setIsLeadSheetOpen(false)}
+        title="ثبت سرنخ تبلیغاتی جدید (Marketing Lead)"
+        footer={
+          <>
+            <PolarisButton onClick={() => setIsLeadSheetOpen(false)}>انصراف</PolarisButton>
+            <PolarisButton
+              primary
+              loading={isSavingLead}
+              disabled={isSavingLead}
+              onClick={handleSaveNewLead}
+            >
+              ذخیره لید بازاریابی
+            </PolarisButton>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <div>
+            <label className="block font-semibold mb-1">نام مخاطب لید *</label>
+            <input
+              type="text"
+              autoFocus
+              value={leadName}
+              onChange={(e) => setLeadName(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white dark:bg-slate-900"
+            />
+          </div>
+          <div>
+            <label className="block font-semibold mb-1">شماره تماس *</label>
+            <input
+              type="text"
+              value={leadPhone}
+              onChange={(e) => setLeadPhone(e.target.value)}
+              className="w-full px-3 py-2 font-mono border border-slate-300 rounded-lg bg-white dark:bg-slate-900 tabular-nums"
+            />
+          </div>
+          <div>
+            <label className="block font-semibold mb-1">کانال جذب</label>
+            <select
+              value={leadSource}
+              onChange={(e) => setLeadSource(e.target.value as CrmLeadRecord['source'])}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white dark:bg-slate-900"
+            >
+              <option value="اینستاگرام">اینستاگرام</option>
+              <option value="تلگرام">تلگرام</option>
+              <option value="تماس تلفنی">تماس تلفنی</option>
+              <option value="مراجعه حضوری">مراجعه حضوری</option>
+              <option value="کمپین اینفلوئنسر">کمپین اینفلوئنسر</option>
+            </select>
+          </div>
+          <div>
+            <label className="block font-semibold mb-1">کمپین</label>
+            <input
+              type="text"
+              value={leadCampaign}
+              onChange={(e) => setLeadCampaign(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white dark:bg-slate-900"
+            />
+          </div>
+          <div>
+            <label className="block font-semibold mb-1">علاقه‌مندی</label>
+            <select
+              value={leadStyle}
+              onChange={(e) => setLeadStyle(e.target.value as CrmLeadRecord['interestStyle'])}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white dark:bg-slate-900"
+            >
+              <option value="سبک MTL (سیگاری)">سبک MTL (سیگاری)</option>
+              <option value="سبک DTL (قلیانی)">سبک DTL (قلیانی)</option>
+              <option value="همکار عمده‌فروش">همکار عمده‌فروش</option>
+            </select>
+          </div>
+        </div>
+      </PolarisSheet>
     </div>
   );
 };

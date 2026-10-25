@@ -167,10 +167,13 @@ export const OperationalCalendarModule: React.FC<OperationalCalendarModuleProps>
           notes: pi.paymentNotes || 'ثبت‌شده خودکار از فاکتور خرید تعهدی',
         });
       }
-      if (pi.deliveryStatus === 'در راه (هنوز نرسیده)') {
+      if (
+        pi.deliveryStatus === 'در انتظار رسیدن بار' ||
+        pi.deliveryStatus === 'در راه (هنوز نرسیده)'
+      ) {
         autoEvents.push({
           id: `auto-pi-transit-${pi.id}`,
-          title: `پیگیری تحویل بار در راه: ${pi.itemsSummary}`,
+          title: `در انتظار رسیدن بار: ${pi.itemsSummary}`,
           date: pi.settlementDueDate || pi.date,
           time: '10:00',
           category: 'in_transit',
@@ -178,7 +181,7 @@ export const OperationalCalendarModule: React.FC<OperationalCalendarModuleProps>
           referenceNo: pi.billNo,
           partyName: pi.supplierName,
           isCompleted: false,
-          notes: 'بار خریداری‌شده هنوز تحویل انبار نشده است',
+          notes: 'برچسب «در انتظار رسیدن بار» متصل به داشبورد و تقویم عملیاتی',
         });
       }
     });

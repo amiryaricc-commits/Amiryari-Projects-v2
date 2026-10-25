@@ -196,16 +196,16 @@ export function calculateMovingAverageValuation(
 ): { newQty: number; newValuationRate: number; totalValue: number } {
   const safeCurrentQty = Math.max(0, currentQty);
   const safeIncomingQty = Math.max(0, incomingQty);
-  const newQty = safeCurrentQty + safeIncomingQty;
+  const newQty = Number((safeCurrentQty + safeIncomingQty).toFixed(2));
   if (newQty === 0) {
-    return { newQty: 0, newValuationRate: currentValuationRate, totalValue: 0 };
+    return { newQty: 0, newValuationRate: Number(currentValuationRate.toFixed(2)), totalValue: 0 };
   }
   const totalValue = safeCurrentQty * currentValuationRate + safeIncomingQty * incomingRate;
-  const newValuationRate = Math.round(totalValue / newQty);
+  const newValuationRate = Number((totalValue / newQty).toFixed(2));
   return {
     newQty,
     newValuationRate,
-    totalValue: newQty * newValuationRate,
+    totalValue: Number((newQty * newValuationRate).toFixed(2)),
   };
 }
 
@@ -1142,11 +1142,16 @@ export interface ThreeBucketPartnerInput {
 
 export interface ThreeBucketCalculationResult {
   netProfit: number;
+  inventoryRecoveryShare: number; // حق انبار (کسر مستقیم COGS)
   bucket1InitialInventoryCapital: number;
   bucket1RecoveredCogs: number;
   bucket1UsedForPurchases: number;
   bucket1CurrentBalance: number;
   totalNewCapitalNeeded: number;
+  partnerWallets: {
+    partner70: number;
+    partner30: number;
+  };
   partners: {
     id: string;
     name: string;
@@ -1169,9 +1174,13 @@ export function calculateThreeBucketShareholderState(params: {
   totalNewPurchasesAmount: number;
   partners: ThreeBucketPartnerInput[];
 }): ThreeBucketCalculationResult {
-  const netProfit = params.totalRevenue - params.totalCogs - params.totalOperatingExpenses;
+  // گام ۱: کسر مستقیم COGS به عنوان سهم احیای انبار (حق انبار)
+  const inventoryRecoveryShare = Number(Math.max(0, params.totalCogs).toFixed(2));
+  const netProfit = Number(
+    (params.totalRevenue - inventoryRecoveryShare - params.totalOperatingExpenses).toFixed(2)
+  );
   // Bucket 1 (Capital Recovery Pool) receives COGS from every sale so inventory capital is preserved
-  const availableRecoveryPool = Math.max(0, params.totalCogs);
+  const availableRecoveryPool = inventoryRecoveryShare;
   const bucket1UsedForPurchases = Math.min(availableRecoveryPool, Math.max(0, params.totalNewPurchasesAmount));
   const bucket1CurrentBalance = Math.max(0, availableRecoveryPool - bucket1UsedForPurchases);
   // Any purchase exceeding Bucket 1 is new inventory expansion capital funded 50/50 (C_i)
@@ -1204,14 +1213,164 @@ export function calculateThreeBucketShareholderState(params: {
     };
   });
 
+  const partner70Obj =
+    partners.find((p) => p.profitSharePercent === 70) || partners[0];
+  const partner30Obj =
+    partners.find((p) => p.profitSharePercent === 30) || partners[1] || partners[0];
+
   return {
     netProfit,
+    inventoryRecoveryShare,
     bucket1InitialInventoryCapital: params.initialInventoryCapital,
-    bucket1RecoveredCogs: params.totalCogs,
+    bucket1RecoveredCogs: inventoryRecoveryShare,
     bucket1UsedForPurchases,
     bucket1CurrentBalance,
     totalNewCapitalNeeded,
+    partnerWallets: {
+      partner70: partner70Obj ? partner70Obj.walletBalance : Math.round(netProfit * 0.7),
+      partner30: partner30Obj ? partner30Obj.walletBalance : Math.round(netProfit * 0.3),
+    },
     partners,
+  };
+}
+
+// ============================================================================
+// MODULE 5 & 12: VOID INVOICE ENGINE (جایگزین حذف فیزیکی با رکورد جبرانی معکوس)
+// ============================================================================
+export interface VoidableInvoiceInput {
+  id: string;
+  invoiceNo?: string;
+  billNo?: string;
+  docstatus: number;
+  status: string;
+  totalAmount: number;
+  paidAmount?: number;
+  cogsAmount?: number;
+  paymentAccountCode?: string;
+  isHistoricalArchive?: boolean;
+  deliveryStatus?: string;
+  lines?: {
+    sku: string;
+    qty: number;
+    valuationRate?: number;
+    isDecantMl?: boolean;
+  }[];
+}
+
+export function voidInvoice<
+  TInv extends VoidableInvoiceInput,
+  TItem extends {
+    sku: string;
+    stockQty: number;
+    isBundle?: boolean;
+    bundleComponentItems?: { sku: string; qty: number }[];
+  }
+>(params: {
+  invoice: TInv;
+  invoiceType: 'sales' | 'purchase';
+  inventory: TItem[];
+}): {
+  voidedInvoice: TInv & {
+    docstatus: 2;
+    status: 'ابطال‌شده';
+    cancelledStatus: 'Cancelled';
+  };
+  reversalLedgerLines: { accountCode: string; debit: number; credit: number }[];
+  restoredInventory: TItem[];
+  auditSummary: string;
+} {
+  const { invoice, invoiceType, inventory } = params;
+  const paid = Math.max(0, invoice.paidAmount ?? 0);
+  const unpaid = Math.max(0, invoice.totalAmount - paid);
+  const reversalLedgerLines: { accountCode: string; debit: number; credit: number }[] = [];
+  let restoredInventory = [...inventory];
+
+  if (invoiceType === 'sales') {
+    // 1. Reverse Sales Revenue (Debit 4101)
+    reversalLedgerLines.push({
+      accountCode: '4101',
+      debit: invoice.totalAmount,
+      credit: 0,
+    });
+    // 2. Reverse Cash/POS/Card received (Credit liquidity account)
+    if (paid > 0) {
+      reversalLedgerLines.push({
+        accountCode: invoice.paymentAccountCode || '110101',
+        debit: 0,
+        credit: paid,
+      });
+    }
+    // 3. Reverse Accounts Receivable (Credit 1102)
+    if (unpaid > 0) {
+      reversalLedgerLines.push({
+        accountCode: '1102',
+        debit: 0,
+        credit: unpaid,
+      });
+    }
+    // 4. Reverse COGS & restore inventory asset (Debit 110401, Credit 5101)
+    const cogs = Math.max(0, invoice.cogsAmount ?? 0);
+    if (cogs > 0) {
+      reversalLedgerLines.push(
+        { accountCode: '110401', debit: cogs, credit: 0 },
+        { accountCode: '5101', debit: 0, credit: cogs }
+      );
+    }
+    // 5. Restore physical stock quantities for non-archived invoices
+    if (invoice.lines && invoice.lines.length > 0 && !invoice.isHistoricalArchive) {
+      const nonDecantLines = invoice.lines
+        .filter((l) => !l.isDecantMl)
+        .map((l) => ({ sku: l.sku, qty: l.qty }));
+      restoredInventory = restoreStockWithBundles(inventory, nonDecantLines);
+    }
+  } else {
+    // Purchase Invoice Reversal (Credit 110403, Debit Cash/Payables)
+    reversalLedgerLines.push({
+      accountCode: '110403',
+      debit: 0,
+      credit: invoice.totalAmount,
+    });
+    if (paid > 0) {
+      reversalLedgerLines.push({
+        accountCode: invoice.paymentAccountCode || '110102',
+        debit: paid,
+        credit: 0,
+      });
+    }
+    if (unpaid > 0) {
+      reversalLedgerLines.push({
+        accountCode: '2101',
+        debit: unpaid,
+        credit: 0,
+      });
+    }
+    if (
+      invoice.lines &&
+      invoice.lines.length > 0 &&
+      invoice.deliveryStatus === 'رسیده'
+    ) {
+      const deductMap = new Map<string, number>();
+      for (const l of invoice.lines) {
+        deductMap.set(l.sku, (deductMap.get(l.sku) || 0) + l.qty);
+      }
+      restoredInventory = inventory.map((item) => {
+        const d = deductMap.get(item.sku) || 0;
+        return d > 0 ? { ...item, stockQty: Math.max(0, item.stockQty - d) } : item;
+      });
+    }
+  }
+
+  const refNo = invoice.invoiceNo || invoice.billNo || invoice.id;
+  return {
+    voidedInvoice: {
+      ...invoice,
+      docstatus: 2,
+      status: 'ابطال‌شده',
+      cancelledStatus: 'Cancelled',
+    },
+    reversalLedgerLines,
+    restoredInventory,
+    auditSummary: `سند «${refNo}» به وضعیت Cancelled (ابطال‌شده) تغییر یافت و رکورد جبرانی معکوس در انبار و حسابداری صادر شد.`,
   };
 }
 
@@ -1296,8 +1455,8 @@ export function consumeFifoLayers(
   if (!layers || layers.length === 0) {
     return {
       remainingLayers: [],
-      totalCogs: Math.round(soldQty * fallbackUnitCost),
-      nextValuationRate: fallbackUnitCost,
+      totalCogs: Number((soldQty * fallbackUnitCost).toFixed(2)),
+      nextValuationRate: Number(fallbackUnitCost.toFixed(2)),
     };
   }
 
@@ -1312,8 +1471,8 @@ export function consumeFifoLayers(
     }
     const take = Math.min(layer.qty, needed);
     totalCogs += take * layer.unitCost;
-    needed -= take;
-    const left = layer.qty - take;
+    needed = Number((needed - take).toFixed(2));
+    const left = Number((layer.qty - take).toFixed(2));
     if (left > 0) {
       remainingLayers.push({ ...layer, qty: left });
     }
@@ -1328,8 +1487,8 @@ export function consumeFifoLayers(
 
   return {
     remainingLayers,
-    totalCogs: Math.round(totalCogs),
-    nextValuationRate,
+    totalCogs: Number(totalCogs.toFixed(2)),
+    nextValuationRate: Number(nextValuationRate.toFixed(2)),
   };
 }
 

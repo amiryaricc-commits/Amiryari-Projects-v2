@@ -146,7 +146,8 @@ export interface PurchaseInvoiceRecord {
   itemCondition?: string;
   itemType?: string;
   sector?: 'vape' | 'pc';
-  deliveryStatus?: 'رسیده' | 'در راه (هنوز نرسیده)';
+  deliveryStatus?: 'رسیده' | 'در راه (هنوز نرسیده)' | 'در انتظار رسیدن بار';
+  cancelledStatus?: 'Cancelled';
   paymentAccountCode?: string;
   paymentMode?: 'کارتخوان (POS)' | 'کارت به کارت' | 'نقد (صندوق مغازه)' | 'نسیه تعهدی';
   paymentNotes?: string;

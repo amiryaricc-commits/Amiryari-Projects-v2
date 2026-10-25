@@ -81,6 +81,7 @@ import {
   deductDecantMlFromBottle,
   consumeFifoLayers,
   calculateThreeBucketShareholderState,
+  voidInvoice,
 } from './utils/erpEngine';
 
 import { AccountingModule, AccountingSubTab } from './components/AccountingModule';
@@ -112,6 +113,27 @@ type WorkspaceId =
   | 'calendar'
   | 'webshop'
   | 'settings';
+
+const WORKSPACE_TO_PATH: Record<WorkspaceId, string> = {
+  home: '/',
+  pos: '/pos',
+  stock: '/stock',
+  festivals: '/festivals',
+  accounting: '/accounting',
+  analytics: '/analytics',
+  crm: '/crm',
+  calendar: '/calendar',
+  webshop: '/webshop',
+  settings: '/settings',
+};
+
+const getWorkspaceFromPath = (pathname: string): WorkspaceId => {
+  const clean = pathname.replace(/\/+$/, '') || '/';
+  const entry = (Object.entries(WORKSPACE_TO_PATH) as [WorkspaceId, string][]).find(
+    ([, p]) => p === clean
+  );
+  return entry ? entry[0] : 'home';
+};
 
 interface SystemBackupSnapshot {
   id: string;
@@ -162,12 +184,33 @@ const normalizeCloudyShopInventory = (
   });
 
 export function App() {
-  const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>('home');
-  const [accountingInitialTab, setAccountingInitialTab] =
+  const [activeWorkspace, setActiveWorkspaceState] = useState<WorkspaceId>(() =>
+    getWorkspaceFromPath(window.location.pathname)
+  );
+  const [accountingInitialTab] =
     useState<AccountingSubTab>('coa');
+  const [posInitialView, setPosInitialView] = useState<
+    'pos' | 'purchase_invoice' | 'returns' | 'reseller_pricelist' | 'invoices_archive'
+  >('pos');
   const [inventoryInitialTab, setInventoryInitialTab] = useState<
     'stocktaking' | 'sku_allocation' | 'festivals_bundles'
   >('stocktaking');
+
+  const setActiveWorkspace = useCallback((ws: WorkspaceId) => {
+    setActiveWorkspaceState(ws);
+    const targetPath = WORKSPACE_TO_PATH[ws] || '/';
+    if (window.location.pathname !== targetPath) {
+      window.history.pushState({ workspace: ws }, '', targetPath);
+    }
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => {
+      setActiveWorkspaceState(getWorkspaceFromPath(window.location.pathname));
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
 
   const [activeRole] = useState<SystemRole>('ادمین کل (Super Admin)');
   const [activeFiscalYear] = useState(() => `سال مالی ${getPersianYear()}`);
@@ -748,50 +791,23 @@ export function App() {
     return true;
   };
 
-  // Void Sales Invoice (ابطال سند فروش بدون حذف فیزیکی)
+  // Void Sales Invoice using voidInvoice engine (تغییر وضعیت به Cancelled و رکورد جبرانی معکوس)
   const handleVoidSalesInvoice = (id: string) => {
     const inv = salesInvoices.find((s) => s.id === id);
     if (!inv || inv.docstatus === 2) return;
 
-    if (inv.lines && inv.lines.length > 0 && !inv.isHistoricalArchive) {
-      setInventoryItems((curr) =>
-        restoreStockWithBundles(
-          curr,
-          inv.lines!.map((l) => ({ sku: l.sku, qty: l.qty }))
-        )
-      );
-    }
+    const voidRes = voidInvoice({
+      invoice: inv,
+      invoiceType: 'sales',
+      inventory: inventoryItems,
+    });
 
-    const revLines: { accountCode: string; debit: number; credit: number }[] = [
-      { accountCode: '4101', debit: inv.totalAmount, credit: 0 },
-    ];
-    if (inv.paidAmount > 0) {
-      revLines.push({
-        accountCode: inv.paymentAccountCode || '110101',
-        debit: 0,
-        credit: inv.paidAmount,
-      });
-    }
-    const unpaid = Math.max(0, inv.totalAmount - inv.paidAmount);
-    if (unpaid > 0) {
-      revLines.push({ accountCode: '1102', debit: 0, credit: unpaid });
-    }
-    if ((inv.cogsAmount || 0) > 0) {
-      revLines.push(
-        { accountCode: '110401', debit: inv.cogsAmount!, credit: 0 },
-        { accountCode: '5101', debit: 0, credit: inv.cogsAmount! }
-      );
-    }
-
-    setAccounts((curr) => postDoubleEntryToAccounts(curr, revLines));
+    setInventoryItems(voidRes.restoredInventory);
+    setAccounts((curr) => postDoubleEntryToAccounts(curr, voidRes.reversalLedgerLines));
     setSalesInvoices((prev) =>
-      prev.map((s) =>
-        s.id === id ? { ...s, docstatus: 2, status: 'ابطال‌شده' } : s
-      )
+      prev.map((s) => (s.id === id ? voidRes.voidedInvoice : s))
     );
-    showToast(
-      `فاکتور فروش «${inv.invoiceNo}» باطل شد (Void)؛ سند معکوس ثبت و موجودی به انبار بازگشت.`
-    );
+    showToast(voidRes.auditSummary);
   };
 
   // Stage-1 Purchase Creation
@@ -823,37 +839,28 @@ export function App() {
     setAccounts((curr) => postDoubleEntryToAccounts(curr, ledgerLines));
     setPurchaseInvoices((prev) => [pinv, ...prev]);
     showToast(
-      `فاکتور خرید «${pinv.billNo}» ثبت شد. اکنون می‌توانید در بخش انبارگردانی طعم و رنگ‌ها را تفکیک کنید.`
+      `فاکتور خرید «${pinv.billNo}» ثبت شد. اکنون می‌توانید در صفحه «پذیرش و برچسب‌گذاری SKU» طعم و مشخصات فنی را ثبت کنید.`
     );
     return true;
   };
 
-  // Void Purchase Invoice
+  // Void Purchase Invoice using voidInvoice engine
   const handleVoidPurchaseInvoice = (id: string) => {
     const pinv = purchaseInvoices.find((p) => p.id === id);
     if (!pinv || pinv.docstatus === 2) return;
-    const paid = pinv.paidAmount ?? 0;
-    const unpaid = Math.max(0, pinv.totalAmount - paid);
-    const revLines: { accountCode: string; debit: number; credit: number }[] = [
-      { accountCode: '110403', debit: 0, credit: pinv.totalAmount },
-    ];
-    if (paid > 0) {
-      revLines.push({
-        accountCode: pinv.paymentAccountCode || '110102',
-        debit: paid,
-        credit: 0,
-      });
-    }
-    if (unpaid > 0) {
-      revLines.push({ accountCode: '2101', debit: unpaid, credit: 0 });
-    }
-    setAccounts((curr) => postDoubleEntryToAccounts(curr, revLines));
+
+    const voidRes = voidInvoice({
+      invoice: pinv,
+      invoiceType: 'purchase',
+      inventory: inventoryItems,
+    });
+
+    setInventoryItems(voidRes.restoredInventory);
+    setAccounts((curr) => postDoubleEntryToAccounts(curr, voidRes.reversalLedgerLines));
     setPurchaseInvoices((prev) =>
-      prev.map((p) =>
-        p.id === id ? { ...p, docstatus: 2, status: 'ابطال‌شده' } : p
-      )
+      prev.map((p) => (p.id === id ? voidRes.voidedInvoice : p))
     );
-    showToast(`فاکتور خرید «${pinv.billNo}» باطل شد (Void) و حساب‌ها به حالت قبل برگشت.`);
+    showToast(voidRes.auditSummary);
   };
 
   // Stage-2 SKU Breakdown Completion
@@ -914,7 +921,7 @@ export function App() {
     }
 
     showToast(
-      `تفکیک مرحله دوم (${allocatedItems.length} کد کالای SKU) با موفقیت در انبار ثبت شد.`
+      `پذیرش و برچسب‌گذاری SKU (${allocatedItems.length} کد کالا) با موفقیت در انبار ثبت شد.`
     );
   };
 
@@ -945,7 +952,10 @@ export function App() {
     (p) => p.docstatus === 1 && !p.skuBreakdownCompleted
   ).length;
   const inTransitCount = purchaseInvoices.filter(
-    (p) => p.docstatus === 1 && p.deliveryStatus === 'در راه (هنوز نرسیده)'
+    (p) =>
+      p.docstatus === 1 &&
+      (p.deliveryStatus === 'در انتظار رسیدن بار' ||
+        p.deliveryStatus === 'در راه (هنوز نرسیده)')
   ).length;
   const unpaidSupplierBillsCount = purchaseInvoices.filter(
     (p) => p.docstatus === 1 && p.totalAmount - (p.paidAmount ?? 0) > 0
@@ -1148,19 +1158,19 @@ export function App() {
 
       {/* Main Layout: Sidebar + Content Area */}
       <div className="max-w-[1600px] mx-auto px-4 lg:px-6 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Right Sidebar Navigation (Sales button removed, Analytics & Calendar & Festivals added) */}
+        {/* Right Sidebar Navigation (Sales isolated to /pos, Analytics isolated to /analytics) */}
         <aside className="lg:col-span-2 space-y-1.5">
           {[
-            { id: 'home', label: 'میز کار (لانچر سریع)', icon: Home },
-            { id: 'pos', label: 'صندوق فروشگاهی (POS)', icon: Store },
-            { id: 'stock', label: 'انبارگردانی (۴ انبار)', icon: Package },
-            { id: 'festivals', label: 'جشنواره و باندل کالا', icon: Sparkles },
-            { id: 'accounting', label: 'حسابداری و سهامداران', icon: Calculator },
-            { id: 'analytics', label: 'آنالیز و آمار (BI)', icon: BarChart3 },
-            { id: 'crm', label: 'باشگاه مشتریان (۶ تب)', icon: Users },
-            { id: 'calendar', label: 'تقویم عملیاتی و Wishlist', icon: CalendarIcon },
-            { id: 'webshop', label: 'فروشگاه آنلاین', icon: Globe },
-            { id: 'settings', label: 'تنظیمات و شعبه', icon: Settings },
+            { id: 'home', label: 'میز کار (Quick Launcher)', path: '/', icon: Home },
+            { id: 'pos', label: 'صندوق فروشگاهی (/pos)', path: '/pos', icon: Store },
+            { id: 'stock', label: 'انبارگردانی و پذیرش SKU', path: '/stock', icon: Package },
+            { id: 'festivals', label: 'جشنواره و باندل کالا', path: '/festivals', icon: Sparkles },
+            { id: 'accounting', label: 'حسابداری و دفاتر (گزارش)', path: '/accounting', icon: Calculator },
+            { id: 'analytics', label: 'آنالیز و آمار (/analytics)', path: '/analytics', icon: BarChart3 },
+            { id: 'crm', label: 'باشگاه مشتریان (۶ تب)', path: '/crm', icon: Users },
+            { id: 'calendar', label: 'تقویم عملیاتی و Wishlist', path: '/calendar', icon: CalendarIcon },
+            { id: 'webshop', label: 'فروشگاه آنلاین', path: '/webshop', icon: Globe },
+            { id: 'settings', label: 'تنظیمات و شعبه', path: '/settings', icon: Settings },
           ].map((nav) => {
             const Icon = nav.icon;
             const isActive = activeWorkspace === nav.id;
@@ -1214,13 +1224,13 @@ export function App() {
                   <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-50 text-indigo-700 text-xs font-bold mb-2">
                     <span>شعبه فعال: {defaultBranch}</span>
                     <span>•</span>
-                    <span>حالت امنیتی عدم نمایش ارقام مالی در صفحه اول</span>
+                    <span>Privacy Mode فعال (تایمر خودکار ۶۰ ثانیه)</span>
                   </div>
                   <h1 className="text-xl font-black text-slate-900">
-                    میز کار عملیاتی فراپِی (Odoo-Style Quick Launcher)
+                    میز کار عملیاتی فراپِی (Quick Actions Launcher)
                   </h1>
                   <p className="text-xs text-slate-500 mt-1">
-                    برای حفظ محرمانگی در حضور مشتری، تمام گزارش‌های مالی و سود خالص به بخش «آنالیز و آمار» و «حسابداری» منتقل شده‌اند.
+                    برای حفظ محرمانگی در حضور مشتری، تمام کارت‌های تحلیلی، نمودارهای رشد سرمایه و حاشیه‌های سود به روت مستقل «/analytics» منتقل شده‌اند.
                   </p>
                 </div>
 
@@ -1231,7 +1241,7 @@ export function App() {
                     className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-indigo-600 text-white text-xs font-black hover:bg-indigo-700 shadow-xs"
                   >
                     <Store className="w-4 h-4" />
-                    <span>ورود سریع به صندوق فروشگاهی (POS)</span>
+                    <span>ورود سریع به صندوق فروشگاهی (/pos)</span>
                   </button>
                 </div>
               </div>
@@ -1242,9 +1252,9 @@ export function App() {
                   <div className="flex items-center gap-3">
                     <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
                     <div>
-                      <div className="font-black">فاکتورهای خرید در انتظار تفکیک SKU</div>
+                      <div className="font-black">صف پذیرش و برچسب‌گذاری SKU</div>
                       <div className="text-amber-800 mt-0.5">
-                        {pendingBreakdownCount} پارت خرید نیازمند تخصیص طعم/رنگ در انبارگردانی
+                        {pendingBreakdownCount} پارت خرید نیازمند تفکیک طعم و مشخصات فنی
                       </div>
                     </div>
                   </div>
@@ -1256,7 +1266,7 @@ export function App() {
                     }}
                     className="px-3 py-1.5 rounded-lg bg-amber-900 text-white font-bold shrink-0"
                   >
-                    تفکیک
+                    پذیرش SKU
                   </button>
                 </div>
 
@@ -1264,21 +1274,21 @@ export function App() {
                   <div className="flex items-center gap-3">
                     <Truck className="w-5 h-5 text-sky-600 shrink-0" />
                     <div>
-                      <div className="font-black">بارهای خریداری‌شده «در راه»</div>
+                      <div className="font-black">برچسب «در انتظار رسیدن بار»</div>
                       <div className="text-sky-800 mt-0.5">
-                        {inTransitCount} محموله در مسیر تحویل به انبار مرکزی
+                        {inTransitCount} محموله خرید در انتظار رسیدن فیزیکی به انبار
                       </div>
                     </div>
                   </div>
                   <button
                     type="button"
                     onClick={() => {
-                      setAccountingInitialTab('purchase_invoice');
-                      setActiveWorkspace('accounting');
+                      setPosInitialView('invoices_archive');
+                      setActiveWorkspace('pos');
                     }}
                     className="px-3 py-1.5 rounded-lg bg-sky-900 text-white font-bold shrink-0"
                   >
-                    بررسی
+                    بررسی بار
                   </button>
                 </div>
 
@@ -1307,15 +1317,15 @@ export function App() {
                 {[
                   {
                     id: 'pos',
-                    title: 'صندوق فروشگاهی (POS)',
-                    desc: 'فروش عادی، جشنواره، ریسلر، دکانت میلی‌لیتری جویس و خدمات فنی',
+                    title: 'صندوق فروشگاهی (/pos)',
+                    desc: 'فروش عادی، فروش جشنواره، ریسلر، چک‌باکس میلی‌لیتری جویس و خدمات فنی',
                     icon: Store,
                     color: 'bg-indigo-600',
                   },
                   {
                     id: 'stock',
-                    title: 'انبارگردانی و ۴ انبار',
-                    desc: 'ویترین، انبار مغازه، انبار خارجی/مرکزی و امانی + تفکیک سریع با Enter',
+                    title: 'انبارگردانی و پذیرش SKU',
+                    desc: '۴ انبار پیش‌فرض (ویترین، مغازه، مرکزی/خارجی، امانی) + برچسب‌گذاری SKU',
                     icon: Package,
                     color: 'bg-emerald-600',
                   },
@@ -1328,15 +1338,15 @@ export function App() {
                   },
                   {
                     id: 'accounting',
-                    title: 'حسابداری، خرید و ۳ قلک سهامداران',
-                    desc: 'درخت حساب‌ها، ترازنامه یکپارچه، هزینه ثابت ۲ جدولی و موتور ۵۰/۵۰ و ۷۰/۳۰',
+                    title: 'حسابداری و گزارش دفاتر (Read-Only)',
+                    desc: 'درخت حساب‌ها، تراز آزمایشی ۶ ستونی، ترازنامه یکپارچه و گزارش ۳ قلک سهامداران',
                     icon: Calculator,
                     color: 'bg-slate-900',
                   },
                   {
                     id: 'analytics',
-                    title: 'آنالیز و آمار (هوش تجاری)',
-                    desc: 'تفکیک سود ویپ و کامپیوتر، رادار رسوب کالا (>۴۵ روز) و هشدار انقضای جویس',
+                    title: 'آنالیز و آمار (/analytics)',
+                    desc: 'نمودار رشد سرمایه، حاشیه سود ویپ و کامپیوتر، رادار رسوب کالا و انقضا',
                     icon: BarChart3,
                     color: 'bg-purple-600',
                   },
@@ -1350,7 +1360,7 @@ export function App() {
                   {
                     id: 'calendar',
                     title: 'تقویم عملیاتی و Wishlist',
-                    desc: 'تقویم Notion-Style روزانه/هفتگی/ماهانه و درخواست شارژ کالای مشتریان',
+                    desc: 'تقویم روزانه/هفتگی/ماهانه، پیگیری «در انتظار رسیدن بار» و شارژ کالا',
                     icon: CalendarIcon,
                     color: 'bg-sky-600',
                   },
@@ -1403,18 +1413,40 @@ export function App() {
             </div>
           )}
 
-          {/* POS WORKSPACE */}
+          {/* POS WORKSPACE (All Sales & Stage-1 Purchase Invoices Centralized Here) */}
           {activeWorkspace === 'pos' && (
             <SellingPosModule
               productionMode={productionMode}
               privacyMasked={privacyMask}
+              initialView={posInitialView}
               contacts={customerContacts}
               inventoryItems={inventoryItems}
               promotionRules={promotionRules}
               salesInvoices={salesInvoices}
+              purchaseInvoices={purchaseInvoices}
+              warehouses={warehouses}
+              masterOptions={masterOptions}
+              onAddMasterOption={handleAddMasterOption}
               onAddQuickCustomer={(newCust) => {
                 setCustomerContacts((prev) => [newCust, ...prev]);
                 showToast(`مشتری جدید «${newCust.fullName}» در باشگاه مشتریان ثبت شد.`);
+              }}
+              onQuickAddSupplier={(supplierName, phone) => {
+                const newContact: CustomerContactRecord = {
+                  id: `sup-${Date.now()}`,
+                  sourceCode: `SUP-${customerContacts.length + 1}`,
+                  fullName: supplierName,
+                  personType: 'حقوقی / تامین‌کننده',
+                  role: 'تأمین‌کننده',
+                  contactCategory: 'supplier',
+                  phone: phone || '—',
+                  notes: 'افزوده‌شده از Sheet صندوق فروشگاهی',
+                };
+                setCustomerContacts((prev) => [newContact, ...prev]);
+                showToast(`تأمین‌کننده «${supplierName}» در مخاطبین ثبت شد.`);
+              }}
+              onCreateQuickInventoryItem={(newItem) => {
+                setInventoryItems((prev) => [newItem, ...prev]);
               }}
               onUpdateResellerPrice={(sku, newPrice) => {
                 setInventoryItems((prev) =>
@@ -1428,6 +1460,21 @@ export function App() {
               }}
               onCompletePosCheckout={handleCompletePosCheckout}
               onProcessPosReturn={handleProcessPosReturn}
+              onVoidSalesInvoice={handleVoidSalesInvoice}
+              onCreatePurchaseInvoice={handleCreatePurchaseInvoice}
+              onVoidPurchaseInvoice={handleVoidPurchaseInvoice}
+              onMarkPurchaseArrived={(id) => {
+                setPurchaseInvoices((prev) =>
+                  prev.map((p) =>
+                    p.id === id ? { ...p, deliveryStatus: 'رسیده' } : p
+                  )
+                );
+                showToast('وضعیت محموله به «رسیده به انبار» تغییر یافت.');
+              }}
+              onNavigateToInventoryBreakdown={() => {
+                setInventoryInitialTab('sku_allocation');
+                setActiveWorkspace('stock');
+              }}
               onShowToast={showToast}
             />
           )}

@@ -28,6 +28,7 @@ import {
   deductDecantMlFromBottle,
   consumeFifoLayers,
   smartFilterAndRankItems,
+  voidInvoice,
 } from './erpEngine';
 import { INITIAL_ACCOUNTS, INITIAL_GL_ENTRIES } from '../data/erpSeedData';
 
@@ -648,4 +649,78 @@ test('smartFilterAndRankItems ranks case-insensitive exact matches first followe
   assert.equal(ranked[0].sku, 'vgod');
   assert.equal(ranked[1].sku, 'VGOD-MANGO-25');
 });
+
+test('voidInvoice marks invoice as Cancelled and generates compensating reversal entries for inventory and GL', () => {
+  const initialInventory = [
+    { sku: 'SALT-NASTY-30', stockQty: 8 },
+    { sku: 'COIL-XROS-06', stockQty: 15 },
+  ];
+  const salesInvoice = {
+    id: 'sinv-101',
+    invoiceNo: 'POS-1404-1001',
+    docstatus: 1,
+    status: 'پرداخت‌شده',
+    totalAmount: 1200000,
+    paidAmount: 1000000,
+    cogsAmount: 820000,
+    paymentAccountCode: '110101',
+    lines: [{ sku: 'SALT-NASTY-30', qty: 2, valuationRate: 410000 }],
+  };
+
+  const res = voidInvoice({
+    invoice: salesInvoice,
+    invoiceType: 'sales',
+    inventory: initialInventory,
+  });
+
+  assert.equal(res.voidedInvoice.docstatus, 2);
+  assert.equal(res.voidedInvoice.status, 'ابطال‌شده');
+  assert.equal(res.voidedInvoice.cancelledStatus, 'Cancelled');
+  // Stock restored from 8 to 10
+  assert.equal(
+    res.restoredInventory.find((i) => i.sku === 'SALT-NASTY-30')?.stockQty,
+    10
+  );
+  // Double-entry reversal is balanced
+  const totalDebit = res.reversalLedgerLines.reduce((s, l) => s + l.debit, 0);
+  const totalCredit = res.reversalLedgerLines.reduce((s, l) => s + l.credit, 0);
+  assert.equal(totalDebit, totalCredit);
+});
+
+test('MWA and FIFO support standard 2-decimal precision and Three-Bucket exposes inventoryRecoveryShare and partnerWallets', () => {
+  const mwa = calculateMovingAverageValuation(2, 100.25, 1, 100.75);
+  assert.equal(mwa.newQty, 3);
+  assert.equal(mwa.newValuationRate, 100.42);
+
+  const tb = calculateThreeBucketShareholderState({
+    initialInventoryCapital: 50000000,
+    totalRevenue: 20000000,
+    totalCogs: 12000000,
+    totalOperatingExpenses: 2000000,
+    totalNewPurchasesAmount: 10000000,
+    partners: [
+      {
+        id: 'sh-1',
+        name: 'شریک اول',
+        capitalSharePercent: 50,
+        profitSharePercent: 70,
+        personalCapitalInjected: 0,
+        withdrawals: 0,
+      },
+      {
+        id: 'sh-2',
+        name: 'شریک دوم',
+        capitalSharePercent: 50,
+        profitSharePercent: 30,
+        personalCapitalInjected: 0,
+        withdrawals: 0,
+      },
+    ],
+  });
+  assert.equal(tb.inventoryRecoveryShare, 12000000);
+  assert.equal(tb.netProfit, 6000000);
+  assert.equal(tb.partnerWallets.partner70, 4200000);
+  assert.equal(tb.partnerWallets.partner30, 1800000);
+});
+
 

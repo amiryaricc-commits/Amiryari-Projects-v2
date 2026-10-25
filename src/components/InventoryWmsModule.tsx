@@ -7,12 +7,11 @@ import {
   Plus,
   Eye,
   EyeOff,
-  AlertTriangle,
   Warehouse,
   CheckCircle2,
   Droplets,
-  Cpu,
-  Flame,
+  Trash2,
+  ArrowLeftRight,
 } from 'lucide-react';
 import {
   InventoryItemRecord,
@@ -28,7 +27,13 @@ import {
   calculateCostPerMl,
   SystemRole,
 } from '../utils/erpEngine';
-import { CreatableCombobox } from './CreatableCombobox';
+import {
+  CreatableCombobox,
+  PolarisButton,
+  PolarisButtonGroup,
+  PolarisCollapsible,
+  PolarisSheet,
+} from './CreatableCombobox';
 
 interface SkuBreakdownRow {
   rowId: string;
@@ -129,33 +134,44 @@ export const InventoryWmsModule: React.FC<InventoryWmsModuleProps> = ({
     setActiveTab(initialTab);
   }, [initialTab]);
 
-  // Tab 1: Stocktaking & 4 Warehouses State
+  // Tab 1: Stocktaking & 4 Warehouses IndexTable State
   const [selectedWarehouseFilter, setSelectedWarehouseFilter] = useState<string>('all');
   const [selectedSectorFilter, setSelectedSectorFilter] = useState<'all' | 'vape' | 'pc'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [revealCostPrice, setRevealCostPrice] = useState(false);
-  const [showAddWarehouseModal, setShowAddWarehouseModal] = useState(false);
+
+  // Polaris Sheet: + Add Warehouse (Closed by default)
+  const [isWarehouseSheetOpen, setIsWarehouseSheetOpen] = useState(false);
+  const [isSavingWarehouse, setIsSavingWarehouse] = useState(false);
   const [newWhName, setNewWhName] = useState('');
   const [newWhLocation, setNewWhLocation] = useState('');
   const [newWhDesc, setNewWhDesc] = useState('');
 
-  // Quick stock transfer between the 4 warehouses
+  // Polaris Collapsible: Stock Transfer between 4 warehouses (Closed by default)
+  const [isTransferCollapsibleOpen, setIsTransferCollapsibleOpen] = useState(false);
+  const [isSubmittingTransfer, setIsSubmittingTransfer] = useState(false);
   const [transferSku, setTransferSku] = useState('');
   const [transferFromWh, setTransferFromWh] = useState<WarehouseKey>('central_external');
   const [transferToWh, setTransferToWh] = useState<WarehouseKey>('vitrine');
   const [transferQty, setTransferQty] = useState(1);
 
-  // Tab 2: Stage-2 SKU Allocation & Rapid Barcode Entry State
+  // Tab 2: Stage-2 SKU Allocation IndexTable & Row-Level Collapsible (Collapsed by default!)
   const [selectedPurchaseId, setSelectedPurchaseId] = useState<string>(
     pendingBreakdownPurchases[0]?.id || ''
   );
   const [breakdownRows, setBreakdownRows] = useState<SkuBreakdownRow[]>(() =>
     Array.from({ length: 5 }, (_, i) => createEmptyBreakdownRow(i))
   );
-  // Refs for rapid Enter-to-next-SKU barcode scanning
+  // Row-level Collapsible state for the 11 technical specs — empty object = ALL CLOSED by default
+  const [expandedSpecRows, setExpandedSpecRows] = useState<Record<string, boolean>>({});
+  const [isSubmittingBreakdown, setIsSubmittingBreakdown] = useState(false);
   const skuInputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
-  // Tab 3: Festivals, Discounts & Product Bundles State
+  // Tab 3: Festivals & Bundles (with Collapsible forms & loading lock)
+  const [isPromoSheetOpen, setIsPromoSheetOpen] = useState(false);
+  const [isBundleCollapsibleOpen, setIsBundleCollapsibleOpen] = useState(false);
+  const [isSubmittingPromo, setIsSubmittingPromo] = useState(false);
+  const [isSubmittingBundle, setIsSubmittingBundle] = useState(false);
   const [promoName, setPromoName] = useState('');
   const [promoType, setPromoType] = useState<PromotionRuleRecord['festivalType']>(
     'خرید بالای X قلم'
@@ -195,9 +211,9 @@ export const InventoryWmsModule: React.FC<InventoryWmsModuleProps> = ({
     });
   }, [items, searchQuery, selectedSectorFilter, selectedWarehouseFilter]);
 
-  const handleAddWarehouseSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newWhName.trim()) return;
+  const handleAddWarehouseSubmit = () => {
+    if (!newWhName.trim() || isSavingWarehouse) return;
+    setIsSavingWarehouse(true);
     const key = `wh_custom_${Date.now()}`;
     onAddWarehouse({
       id: `wh-${Date.now()}`,
@@ -210,11 +226,11 @@ export const InventoryWmsModule: React.FC<InventoryWmsModuleProps> = ({
     setNewWhName('');
     setNewWhLocation('');
     setNewWhDesc('');
-    setShowAddWarehouseModal(false);
-    onShowToast(`انبار جدید «${newWhName.trim()}» به سیستم اضافه شد.`);
+    setIsSavingWarehouse(false);
+    setIsWarehouseSheetOpen(false);
   };
 
-  // Dedicated Enter key handler on SKU fields: jumps directly to the next row's SKU input!
+  // Dedicated Enter key handler on SKU fields: jumps directly to the next row's SKU input
   const handleSkuInputKeyDown = (
     e: React.KeyboardEvent<HTMLInputElement>,
     rowIndex: number
@@ -224,7 +240,6 @@ export const InventoryWmsModule: React.FC<InventoryWmsModuleProps> = ({
       if (rowIndex + 1 < breakdownRows.length) {
         skuInputRefs.current[rowIndex + 1]?.focus();
       } else {
-        // Automatically append a new row and focus its SKU input
         const nextIndex = breakdownRows.length;
         setBreakdownRows((prev) => [...prev, createEmptyBreakdownRow(nextIndex)]);
         window.setTimeout(() => {
@@ -250,287 +265,194 @@ export const InventoryWmsModule: React.FC<InventoryWmsModuleProps> = ({
           } else {
             next.sector = 'vape';
           }
+          if (typeStr.includes('جویس') || typeStr.includes('سالت')) {
+            next.podTankCapacityMl = '';
+          } else if (typeStr.includes('پاد') || typeStr.includes('دستگاه') || typeStr.includes('کارتریج')) {
+            next.liquidVolumeMl = '';
+            next.allowDecantSale = false;
+          }
         }
         return next;
       })
     );
   };
 
-  const handleSaveBreakdownRows = () => {
+  const toggleSpecRow = (rowId: string) => {
+    setExpandedSpecRows((prev) => ({
+      ...prev,
+      [rowId]: !prev[rowId],
+    }));
+  };
+
+  const handleCommitSkuBreakdown = () => {
+    if (isSubmittingBreakdown) return;
     const validRows = breakdownRows.filter((r) => r.sku.trim() && r.name.trim() && r.qty > 0);
     if (validRows.length === 0) {
-      onShowToast('حداقل یک ردیف با کد SKU، نام کالا و تعداد معتبر وارد کنید.');
+      onShowToast('حداقل یک ردیف معتبر شامل کد SKU، نام کالا و تعداد وارد کنید.');
       return;
     }
 
-    const createdItems: InventoryItemRecord[] = validRows.map((r, idx) => {
-      const bottleVol = parseInt(r.liquidVolumeMl, 10) || 60;
-      const costPerMl = r.allowDecantSale
-        ? calculateCostPerMl(r.unitPurchasePrice, bottleVol)
-        : undefined;
+    setIsSubmittingBreakdown(true);
+
+    const parsedItems: InventoryItemRecord[] = validRows.map((r) => {
+      const liquidVolNum = parseFloat(r.liquidVolumeMl.replace(/[^\d.]/g, '')) || 0;
+      const podCapNum = parseFloat(r.podTankCapacityMl.replace(/[^\d.]/g, '')) || 0;
+      const costPerMl =
+        liquidVolNum > 0 ? calculateCostPerMl(r.unitPurchasePrice, liquidVolNum) : undefined;
+      const retailRate = r.retailPrice || Math.round(r.unitPurchasePrice * 1.35);
+      const wholesaleRate = r.resellerPrice || Math.round(r.unitPurchasePrice * 1.18);
+
       return {
-        id: `itm-${Date.now()}-${idx}`,
-        sku: r.sku.trim(),
+        id: `itm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        sku: r.sku.trim().toUpperCase(),
         name: r.name.trim(),
         category:
           r.sector === 'pc'
             ? 'قطعات کامپیوتر و سخت‌افزار'
-            : r.itemType.includes('جویس') || r.itemType.includes('سالت')
-              ? 'جویس و سالت'
+            : r.itemType.includes('پاد')
+              ? 'دستگاه پاد و ماد'
               : r.itemType.includes('کویل') || r.itemType.includes('کارتریج')
                 ? 'کویل و کارتریج'
-                : 'دستگاه پاد و ماد',
+                : 'جویس و سالت',
+        brand: r.parentTag || 'کلودی شاپ',
         sector: r.sector,
-        brand: r.parentTag,
         parentTag: r.parentTag,
+        condition: (r.condition === 'استوک' ? 'استوک' : 'آکبند') as 'آکبند' | 'استوک',
         itemType: r.itemType,
-        condition: (r.condition as InventoryItemRecord['condition']) || 'آکبند',
+        uomPrimary: 'عدد',
+        stockQty: r.qty,
+        reservedQty: 0,
+        reorderLevel: 3,
+        warehouseStock: {
+          vitrine: r.targetWarehouse === 'vitrine' ? r.qty : 0,
+          shop_storage: r.targetWarehouse === 'shop_storage' ? r.qty : 0,
+          central_external: r.targetWarehouse === 'central_external' ? r.qty : 0,
+          consignment: r.targetWarehouse === 'consignment' ? r.qty : 0,
+          [r.targetWarehouse]: r.qty,
+        },
+        valuationRate: r.unitPurchasePrice,
+        retailPrice: retailRate,
+        wholesalePrice: wholesaleRate,
+        partnerPrice: wholesaleRate,
+        serialNumbers: [],
+        batchNo: 'B-1404',
+        expiryDate: r.expiryDate,
         nicotine: r.nicotine || undefined,
         puffCount: r.puffCount || undefined,
         color: r.color || undefined,
         resistanceOhm: r.resistanceOhm || undefined,
-        liquidVolumeMl: parseInt(r.liquidVolumeMl, 10) || undefined,
-        podTankCapacityMl: parseFloat(r.podTankCapacityMl) || undefined,
+        liquidVolumeMl: liquidVolNum > 0 ? liquidVolNum : undefined,
+        bottleVolumeMl: liquidVolNum > 0 ? liquidVolNum : undefined,
+        podTankCapacityMl: podCapNum > 0 ? podCapNum : undefined,
         allowDecantSale: r.allowDecantSale,
-        bottleVolumeMl: r.allowDecantSale ? bottleVol : undefined,
         openBottleRemainingMl: 0,
         costPerMl,
-        uomPrimary: 'عدد',
-        stockQty: r.qty,
-        warehouseStock: {
-          [r.targetWarehouse]: r.qty,
-        },
         totalInQty: r.qty,
         totalOutQty: 0,
-        reservedQty: 0,
-        reorderLevel: 3,
-        valuationRate: r.unitPurchasePrice,
-        fifoLayers:
-          r.sector === 'pc'
-            ? [{ qty: r.qty, unitCost: r.unitPurchasePrice, date: '۱۴۰۴/۰۸/۰۲' }]
-            : undefined,
-        retailPrice: r.retailPrice || Math.round(r.unitPurchasePrice * 1.35),
-        wholesalePrice: r.resellerPrice || Math.round(r.unitPurchasePrice * 1.18),
-        partnerPrice: r.resellerPrice || Math.round(r.unitPurchasePrice * 1.18),
-        resellerPrice: r.resellerPrice || Math.round(r.unitPurchasePrice * 1.18),
-        serialNumbers: [],
-        batchNo: `B-${Date.now().toString().slice(-4)}`,
-        expiryDate: r.expiryDate || '—',
-        daysInStock: 1,
       };
     });
 
-    onCompleteSkuBreakdown(selectedPurchaseId || null, createdItems);
-    setBreakdownRows(Array.from({ length: 5 }, (_, i) => createEmptyBreakdownRow(i)));
+    window.setTimeout(() => {
+      onCompleteSkuBreakdown(selectedPurchaseId || null, parsedItems);
+      setBreakdownRows(Array.from({ length: 5 }, (_, i) => createEmptyBreakdownRow(i)));
+      setExpandedSpecRows({});
+      setIsSubmittingBreakdown(false);
+    }, 150);
   };
 
   return (
-    <div className="space-y-6">
-      {/* Urgent Alert Banner for Pending Stage-1 Purchase Invoices needing SKU Breakdown */}
-      {pendingBreakdownPurchases.length > 0 && (
-        <div className="rounded-xl border border-amber-400 bg-amber-50 dark:bg-amber-950/50 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-950 dark:text-amber-200">
-          <div className="flex items-start gap-2.5">
-            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-            <div>
-              <div className="font-bold text-sm">
-                اعلان ضروری انبار: {pendingBreakdownPurchases.length} فاکتور خرید کلان منتظر تخصیص کد SKU، طعم‌بندی و چیدمان ویترین است!
-              </div>
-              <p className="mt-0.5 opacity-90">
-                بارهای خریداری‌شده در «انبار خارجی / مرکزی» ثبت شده‌اند اما هنوز به صورت تک‌به‌تک بارکد و ویژگی نخورده‌اند.
-              </p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              setSelectedPurchaseId(pendingBreakdownPurchases[0].id);
-              setActiveTab('sku_allocation');
-            }}
-            className="px-4 py-2 font-bold bg-amber-600 text-white rounded-lg hover:bg-amber-700 whitespace-nowrap shrink-0"
-          >
-            شروع تخصیص SKU و جزئیات بار ←
-          </button>
-        </div>
-      )}
-
-      {/* Sub-navigation */}
-      <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
+    <div className="space-y-4">
+      {/* Top Toolbar: Polaris Secondary Segmented ButtonGroup */}
+      <div className="bg-white dark:bg-slate-900 p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
+        <PolarisButtonGroup segmented>
+          <PolarisButton
+            size="slim"
+            primary={activeTab === 'stocktaking'}
+            icon={<Package className="w-3.5 h-3.5" />}
             onClick={() => setActiveTab('stocktaking')}
-            className={`inline-flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg transition-colors ${
-              activeTab === 'stocktaking'
-                ? 'bg-slate-900 dark:bg-indigo-600 text-white'
-                : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
-            }`}
           >
-            <Warehouse className="w-4 h-4" />
-            <span>انبارگردانی (۴ انبار اصلی و موجودی)</span>
-          </button>
-          <button
-            type="button"
+            انبارگردانی و ۴ انبار ({items.length} قلم)
+          </PolarisButton>
+          <PolarisButton
+            size="slim"
+            primary={activeTab === 'sku_allocation'}
+            icon={<Barcode className="w-3.5 h-3.5" />}
             onClick={() => setActiveTab('sku_allocation')}
-            className={`inline-flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg transition-colors ${
-              activeTab === 'sku_allocation'
-                ? 'bg-slate-900 dark:bg-indigo-600 text-white'
-                : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
-            }`}
           >
-            <Barcode className="w-4 h-4" />
-            <span>ورود جزئیات کالا و تخصیص سریع SKU</span>
-            {pendingBreakdownPurchases.length > 0 && (
-              <span className="px-1.5 py-0.5 text-[10px] bg-amber-500 text-white rounded-full">
-                {pendingBreakdownPurchases.length}
-              </span>
-            )}
-          </button>
-          <button
-            type="button"
+            پذیرش و برچسب‌گذاری SKU ({pendingBreakdownPurchases.length})
+          </PolarisButton>
+          <PolarisButton
+            size="slim"
+            primary={activeTab === 'festivals_bundles'}
+            icon={<Sparkles className="w-3.5 h-3.5" />}
             onClick={() => setActiveTab('festivals_bundles')}
-            className={`inline-flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg transition-colors ${
-              activeTab === 'festivals_bundles'
-                ? 'bg-slate-900 dark:bg-indigo-600 text-white'
-                : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
-            }`}
           >
-            <Sparkles className="w-4 h-4" />
-            <span>مدیریت جشنواره، تخفیف‌ها و باندل کالا</span>
-          </button>
-        </div>
+            جشنواره و باندل کالا
+          </PolarisButton>
+        </PolarisButtonGroup>
 
-        <button
-          type="button"
-          onClick={() => setShowAddWarehouseModal((prev) => !prev)}
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 shrink-0"
-        >
-          <Plus className="w-4 h-4" />
-          <span>افزودن انبار جدید</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <PolarisButton
+            size="slim"
+            icon={<ArrowLeftRight className="w-3.5 h-3.5" />}
+            onClick={() => setIsTransferCollapsibleOpen((prev) => !prev)}
+          >
+            {isTransferCollapsibleOpen ? 'بستن انتقال انبار' : '+ انتقال بین ۴ انبار'}
+          </PolarisButton>
+          <PolarisButton
+            size="slim"
+            icon={revealCostPrice ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+            onClick={() => setRevealCostPrice((prev) => !prev)}
+          >
+            {revealCostPrice ? 'مخفی کردن بهای تمام‌شده' : 'نمایش بهای تمام‌شده'}
+          </PolarisButton>
+          <PolarisButton
+            size="slim"
+            icon={<Plus className="w-3.5 h-3.5" />}
+            onClick={() => setIsWarehouseSheetOpen(true)}
+          >
+            انبار جدید
+          </PolarisButton>
+        </div>
       </div>
 
-      {/* Add New Warehouse Modal/Form */}
-      {showAddWarehouseModal && (
-        <form
-          onSubmit={handleAddWarehouseSubmit}
-          className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-indigo-200 dark:border-indigo-800 grid grid-cols-1 md:grid-cols-4 gap-3 items-end text-xs"
-        >
-          <div>
-            <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-              نام انبار جدید *
-            </label>
-            <input
-              type="text"
-              required
-              placeholder="مثلاً انبار نمایشگاه فصلی"
-              value={newWhName}
-              onChange={(e) => setNewWhName(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"
-            />
-          </div>
-          <div>
-            <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-              موقعیت / آدرس
-            </label>
-            <input
-              type="text"
-              placeholder="طبقه دوم پاساژ..."
-              value={newWhLocation}
-              onChange={(e) => setNewWhLocation(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"
-            />
-          </div>
-          <div>
-            <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-              توضیحات کاربری انبار
-            </label>
-            <input
-              type="text"
-              placeholder="توضیحات..."
-              value={newWhDesc}
-              onChange={(e) => setNewWhDesc(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"
-            />
-          </div>
-          <button
-            type="submit"
-            className="py-2 px-4 font-bold bg-slate-900 dark:bg-indigo-600 text-white rounded-lg hover:bg-slate-800"
-          >
-            ثبت انبار جدید
-          </button>
-        </form>
-      )}
-
-      {/* TAB 1: STOCKTAKING (انبارگردانی - ۴ انبار اصلی + جدول گزارشی موجودی) */}
+      {/* =====================================================================
+          TAB 1: 4 WAREHOUSES INDEXTABLE & STOCKTAKING INDEXTABLE
+         ===================================================================== */}
       {activeTab === 'stocktaking' && (
-        <div className="space-y-5">
-          {/* 4 Warehouses Summary Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {warehouses.map((wh) => {
-              const whQty = items.reduce((sum, item) => {
-                const whMap = item.warehouseStock || { central_external: item.stockQty };
-                return sum + (whMap[wh.key] || 0);
-              }, 0);
-              const isSelected = selectedWarehouseFilter === wh.key;
-              return (
-                <button
-                  key={wh.id}
-                  type="button"
-                  onClick={() =>
-                    setSelectedWarehouseFilter(isSelected ? 'all' : wh.key)
-                  }
-                  className={`p-4 rounded-xl border text-right transition-colors space-y-1.5 ${
-                    isSelected
-                      ? 'bg-indigo-50/90 dark:bg-indigo-950/60 border-indigo-500'
-                      : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:border-slate-300'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-slate-900 dark:text-slate-100">
-                      {wh.name}
-                    </span>
-                    <span className="font-mono text-xs text-slate-400">{wh.accountCode}</span>
-                  </div>
-                  <div className="font-mono tabular-nums text-lg font-bold text-indigo-700 dark:text-indigo-400">
-                    {formatCurrency(whQty)} <span className="text-xs font-normal">واحد کالا</span>
-                  </div>
-                  <p className="text-[11px] text-slate-500 leading-5">{wh.description}</p>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Quick Inter-Warehouse Transfer Bar (انتقال سریع بین انبار مرکزی، انبار مغازه، ویترین و امانی) */}
-          {onTransferWarehouseStock && (
-            <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 grid grid-cols-1 md:grid-cols-12 gap-3 items-end text-xs">
-              <div className="md:col-span-4">
-                <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  انتقال داخلی کالا بین ۴ انبار (شارژ ویترین از انبار مرکزی/مغازه)
+        <div className="space-y-4">
+          {/* Polaris Collapsible: Stock Transfer Between 4 Warehouses (Closed by default) */}
+          <PolarisCollapsible
+            id="wms-transfer-collapsible"
+            open={isTransferCollapsibleOpen}
+            className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800"
+          >
+            <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-end text-xs">
+              <div className="sm:col-span-4">
+                <label className="block font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  کالای مورد انتقال:
                 </label>
                 <select
                   value={transferSku}
                   onChange={(e) => setTransferSku(e.target.value)}
-                  className="w-full px-3 py-1.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"
+                  className="w-full px-3 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg"
                 >
-                  <option value="">انتخاب کالا برای جابه‌جایی...</option>
-                  {items
-                    .filter((i) => i.stockQty > 0)
-                    .slice(0, 100)
-                    .map((i) => (
-                      <option key={i.id} value={i.sku}>
-                        {i.name} ({i.sku}) — کل: {i.stockQty}
-                      </option>
-                    ))}
+                  <option value="">انتخاب کالا...</option>
+                  {items.map((i) => (
+                    <option key={i.sku} value={i.sku}>
+                      {i.name} (کل: {i.stockQty})
+                    </option>
+                  ))}
                 </select>
               </div>
-              <div className="md:col-span-2">
-                <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  از انبار مبدأ
+              <div className="sm:col-span-3">
+                <label className="block font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  از انبار مبدا:
                 </label>
                 <select
                   value={transferFromWh}
-                  onChange={(e) => setTransferFromWh(e.target.value)}
-                  className="w-full px-2.5 py-1.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"
+                  onChange={(e) => setTransferFromWh(e.target.value as WarehouseKey)}
+                  className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg"
                 >
                   {warehouses.map((w) => (
                     <option key={w.id} value={w.key}>
@@ -539,14 +461,14 @@ export const InventoryWmsModule: React.FC<InventoryWmsModuleProps> = ({
                   ))}
                 </select>
               </div>
-              <div className="md:col-span-2">
-                <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  به انبار مقصد
+              <div className="sm:col-span-3">
+                <label className="block font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  به انبار مقصد:
                 </label>
                 <select
                   value={transferToWh}
-                  onChange={(e) => setTransferToWh(e.target.value)}
-                  className="w-full px-2.5 py-1.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"
+                  onChange={(e) => setTransferToWh(e.target.value as WarehouseKey)}
+                  className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg"
                 >
                   {warehouses.map((w) => (
                     <option key={w.id} value={w.key}>
@@ -555,193 +477,226 @@ export const InventoryWmsModule: React.FC<InventoryWmsModuleProps> = ({
                   ))}
                 </select>
               </div>
-              <div className="md:col-span-2">
-                <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  تعداد انتقال
+              <div className="sm:col-span-1">
+                <label className="block font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  تعداد:
                 </label>
                 <input
                   type="number"
                   min={1}
                   value={transferQty}
                   onChange={(e) => setTransferQty(Math.max(1, Number(e.target.value) || 1))}
-                  className="w-full px-2.5 py-1.5 font-mono border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"
+                  className="w-full px-2 py-1.5 font-mono text-center bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg"
                 />
               </div>
-              <div className="md:col-span-2">
-                <button
-                  type="button"
+              <div className="sm:col-span-1">
+                <PolarisButton
+                  primary
+                  fullWidth
+                  size="slim"
+                  loading={isSubmittingTransfer}
+                  disabled={isSubmittingTransfer}
                   onClick={() => {
                     if (!transferSku) {
-                      onShowToast('کالای مورد نظر برای انتقال بین انبارها را انتخاب کنید.');
+                      onShowToast('ابتدا کالا را انتخاب کنید.');
                       return;
                     }
-                    onTransferWarehouseStock(
-                      transferSku,
-                      transferFromWh,
-                      transferToWh,
-                      transferQty
-                    );
+                    if (transferFromWh === transferToWh) {
+                      onShowToast('انبار مبدا و مقصد نمی‌توانند یکسان باشند.');
+                      return;
+                    }
+                    setIsSubmittingTransfer(true);
+                    window.setTimeout(() => {
+                      onTransferWarehouseStock?.(
+                        transferSku,
+                        transferFromWh,
+                        transferToWh,
+                        transferQty
+                      );
+                      setIsSubmittingTransfer(false);
+                      setIsTransferCollapsibleOpen(false);
+                    }, 120);
                   }}
-                  className="w-full py-1.5 px-3 font-bold bg-slate-900 dark:bg-indigo-600 text-white rounded-lg hover:bg-slate-800"
                 >
-                  ثبت جابه‌جایی انبار
-                </button>
+                  انتقال
+                </PolarisButton>
               </div>
             </div>
-          )}
+          </PolarisCollapsible>
 
-          {/* Read-Only Inventory Stock Table with Smart Search & Sector Valuation Badges */}
-          <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-4">
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-              <div>
-                <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">
-                  جدول جامع موجودی انبار (فقط مشاهده و گزارش)
-                </h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  تفکیک خودکار فرمول بهای تمام‌شده: لوازم ویپ‌شاپ بر پایه «میانگین موزون متحرک» · لوازم کامپیوتر بر پایه «FIFO (اولین صادره از اولین وارده)»
-                </p>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2 text-xs">
-                <div className="inline-flex bg-slate-100 dark:bg-slate-800 p-1 rounded-lg">
-                  {[
-                    { id: 'all' as const, label: 'همه اصناف' },
-                    { id: 'vape' as const, label: 'ویپ‌شاپ (میانگین موزون)' },
-                    { id: 'pc' as const, label: 'قطعات کامپیوتر (FIFO)' },
-                  ].map((s) => (
-                    <button
-                      key={s.id}
-                      type="button"
-                      onClick={() => setSelectedSectorFilter(s.id)}
-                      className={`px-2.5 py-1 rounded-md font-semibold ${
-                        selectedSectorFilter === s.id
-                          ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
-                          : 'text-slate-600 dark:text-slate-400'
-                      }`}
-                    >
-                      {s.label}
-                    </button>
-                  ))}
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setRevealCostPrice((prev) => !prev)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-lg font-semibold"
+          {/* Compact Polaris IndexTable: 4 Warehouses Summary */}
+          <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+            <div className="px-4 py-2.5 bg-slate-50 dark:bg-slate-800/70 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs">
+              <span className="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                <Warehouse className="w-3.5 h-3.5 text-indigo-600" />
+                <span>جدول فشرده ۴ انبار سیستم (کلیک روی ردیف = فیلتر موجودی همان انبار)</span>
+              </span>
+              {selectedWarehouseFilter !== 'all' && (
+                <PolarisButton
+                  size="slim"
+                  plain
+                  onClick={() => setSelectedWarehouseFilter('all')}
                 >
-                  {revealCostPrice && !privacyMasked ? (
-                    <EyeOff className="w-3.5 h-3.5" />
-                  ) : (
-                    <Eye className="w-3.5 h-3.5" />
-                  )}
-                  <span>نمایش بهای تمام‌شده</span>
-                </button>
-              </div>
+                  نمایش همه انبارها
+                </PolarisButton>
+              )}
             </div>
-
-            <div className="flex flex-col sm:flex-row gap-2.5 text-xs">
-              <input
-                type="text"
-                placeholder="جستجوی حرفه‌ای کد SKU، نام کالا، طعم، برند یا نیکوتین (Equal & Contains)..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="flex-1 px-3.5 py-2 border border-slate-300 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800"
-              />
-              <select
-                value={selectedWarehouseFilter}
-                onChange={(e) => setSelectedWarehouseFilter(e.target.value)}
-                className="px-3 py-2 border border-slate-300 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800"
-              >
-                <option value="all">همه انبارها ({warehouses.length} انبار)</option>
-                {warehouses.map((w) => (
-                  <option key={w.id} value={w.key}>
-                    فقط {w.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="overflow-x-auto max-h-[520px] border border-slate-200 dark:border-slate-800 rounded-lg">
-              <table className="w-full text-right text-xs border-collapse">
-                <thead className="sticky top-0 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700">
+            <div className="overflow-x-auto">
+              <table className="w-full text-right border-collapse text-xs">
+                <thead className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700">
                   <tr>
-                    <th className="py-2.5 px-3">کد SKU</th>
-                    <th className="py-2.5 px-3">نام کالا · صنف و فرمول ارزش‌گذاری</th>
-                    <th className="py-2.5 px-3">موجودی فعلی (تفکیک انبار)</th>
-                    <th className="py-2.5 px-3">تاریخ انقضا</th>
-                    <th className="py-2.5 px-3 text-left">قیمت بهای تمام‌شده</th>
-                    <th className="py-2.5 px-3 text-center">تعداد ورودی</th>
-                    <th className="py-2.5 px-3 text-center">تعداد خروجی</th>
+                    <th className="py-2 px-3">کد حساب</th>
+                    <th className="py-2 px-3">نام انبار</th>
+                    <th className="py-2 px-3">موقعیت / کاربری</th>
+                    <th className="py-2 px-3">تعداد موجودی (عدد)</th>
+                    <th className="py-2 px-3 text-left">ارزش ریالی موجودی</th>
+                    <th className="py-2 px-3 text-center">فیلتر</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {filteredStockItems.slice(0, 150).map((item) => {
-                    const sector =
-                      item.sector ||
-                      (item.category === 'قطعات کامپیوتر و سخت‌افزار' ? 'pc' : 'vape');
+                  {warehouses.map((wh) => {
+                    const whQty = items.reduce((sum, item) => {
+                      const whMap = item.warehouseStock || { central_external: item.stockQty };
+                      return sum + (whMap[wh.key] || 0);
+                    }, 0);
+                    const whValue = items.reduce((sum, item) => {
+                      const whMap = item.warehouseStock || { central_external: item.stockQty };
+                      return sum + (whMap[wh.key] || 0) * item.valuationRate;
+                    }, 0);
+                    const isSelected = selectedWarehouseFilter === wh.key;
+
+                    return (
+                      <tr
+                        key={wh.id}
+                        className={
+                          isSelected
+                            ? 'bg-indigo-50/70 dark:bg-indigo-950/30 font-semibold'
+                            : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                        }
+                      >
+                        <td className="py-2 px-3 font-mono tabular-nums">{wh.accountCode}</td>
+                        <td className="py-2 px-3 font-bold text-slate-900 dark:text-slate-100">
+                          {wh.name}
+                        </td>
+                        <td className="py-2 px-3 text-slate-500">{wh.description}</td>
+                        <td className="py-2 px-3 font-mono font-bold tabular-nums">
+                          {whQty} عدد
+                        </td>
+                        <td className="py-2 px-3 font-mono font-bold text-left tabular-nums">
+                          {revealCostPrice && !privacyMasked
+                            ? `${formatCurrency(whValue)} تومان`
+                            : '****'}
+                        </td>
+                        <td className="py-2 px-3 text-center">
+                          <PolarisButton
+                            size="slim"
+                            primary={isSelected}
+                            onClick={() =>
+                              setSelectedWarehouseFilter(isSelected ? 'all' : wh.key)
+                            }
+                          >
+                            {isSelected ? 'فیلتر فعال' : 'انتخاب'}
+                          </PolarisButton>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Main Stocktaking Polaris IndexTable */}
+          <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+              <div className="flex-1">
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="جستجوی کالا بر اساس نام، طعم، کد SKU یا نیکوتین..."
+                  className="w-full px-3.5 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg"
+                />
+              </div>
+
+              <PolarisButtonGroup segmented>
+                {[
+                  { id: 'all' as const, label: 'همه اصناف' },
+                  { id: 'vape' as const, label: 'ویپ‌شاپ (میانگین موزون)' },
+                  { id: 'pc' as const, label: 'قطعات کامپیوتر (FIFO)' },
+                ].map((sec) => (
+                  <PolarisButton
+                    key={sec.id}
+                    size="slim"
+                    primary={selectedSectorFilter === sec.id}
+                    onClick={() => setSelectedSectorFilter(sec.id)}
+                  >
+                    {sec.label}
+                  </PolarisButton>
+                ))}
+              </PolarisButtonGroup>
+            </div>
+
+            <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden max-h-[480px] overflow-y-auto overflow-x-auto">
+              <table className="w-full text-right border-collapse text-xs">
+                <thead className="sticky top-0 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700 z-10">
+                  <tr>
+                    <th className="py-2 px-3">کد SKU</th>
+                    <th className="py-2 px-3">نام کالا و مشخصات فنی</th>
+                    <th className="py-2 px-3">وضعیت</th>
+                    <th className="py-2 px-3">موجودی به تفکیک ۴ انبار</th>
+                    <th className="py-2 px-3">انقضا</th>
+                    <th className="py-2 px-3 text-left">بهای تمام‌شده</th>
+                    <th className="py-2 px-3 text-center">ورود</th>
+                    <th className="py-2 px-3 text-center">خروج</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {filteredStockItems.map((item) => {
                     const whMap = item.warehouseStock || { central_external: item.stockQty };
                     const inQty = item.totalInQty ?? item.stockQty;
                     const outQty = item.totalOutQty ?? 0;
 
                     return (
                       <tr key={item.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                        <td className="py-2.5 px-3 font-mono font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">
+                        <td className="py-2 px-3 font-mono text-slate-600 dark:text-slate-400 whitespace-nowrap">
                           {item.sku}
                         </td>
-                        <td className="py-2.5 px-3">
-                          <div className="font-bold text-slate-900 dark:text-slate-100">
+                        <td className="py-2 px-3">
+                          <div className="font-semibold text-slate-900 dark:text-slate-100">
                             {item.name}
                           </div>
-                          <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-1.5 mt-0.5">
-                            {sector === 'pc' ? (
-                              <span className="inline-flex items-center gap-1 text-indigo-600 dark:text-indigo-400 font-medium">
-                                <Cpu className="w-3 h-3" />
-                                <span>کامپیوتر (روش FIFO)</span>
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400 font-medium">
-                                <Flame className="w-3 h-3" />
-                                <span>ویپ‌شاپ (میانگین موزون)</span>
-                              </span>
-                            )}
-                            {item.nicotine && <span>· نیکوتین: {item.nicotine}</span>}
-                            {item.liquidVolumeMl && <span>· حجم مایع: {item.liquidVolumeMl}ml</span>}
-                            {item.podTankCapacityMl && (
-                              <span>· ظرفیت تانک: {item.podTankCapacityMl}ml</span>
-                            )}
-                            {item.resistanceOhm && <span>· مقاومت: {item.resistanceOhm}</span>}
-                          </div>
-                        </td>
-                        <td className="py-2.5 px-3 font-mono tabular-nums">
-                          <div className="font-bold text-slate-900 dark:text-slate-100">
-                            کل: {item.stockQty} {item.uomPrimary}
-                          </div>
                           <div className="text-[11px] text-slate-500">
-                            ویترین: {whMap.vitrine || 0} · مغازه: {whMap.shop_storage || 0} · مرکزی:{' '}
-                            {whMap.central_external || 0} · امانی: {whMap.consignment || 0}
+                            {item.category}
+                            {item.nicotine ? ` · ${item.nicotine}` : ''}
+                            {item.liquidVolumeMl ? ` · ${item.liquidVolumeMl}ml` : ''}
+                            {item.resistanceOhm ? ` · ${item.resistanceOhm}` : ''}
                           </div>
-                          {(item.openBottleRemainingMl || 0) > 0 && (
-                            <div className="text-[11px] text-sky-600 font-semibold">
-                              بطری باز: {item.openBottleRemainingMl} ml (هر میل:{' '}
-                              {revealCostPrice && !privacyMasked
-                                ? `${formatCurrency(item.costPerMl || 0)} ت`
-                                : '****'}
-                              )
-                            </div>
-                          )}
                         </td>
-                        <td className="py-2.5 px-3 font-mono text-slate-600 dark:text-slate-400 whitespace-nowrap">
+                        <td className="py-2 px-3 whitespace-nowrap text-slate-600 dark:text-slate-400">
+                          {item.condition || 'آکبند'}
+                        </td>
+                        <td className="py-2 px-3 font-mono tabular-nums">
+                          <span className="font-bold text-slate-900 dark:text-slate-100 ml-2">
+                            کل: {item.stockQty}
+                          </span>
+                          <span className="text-[11px] text-slate-500">
+                            (ویترین: {whMap.vitrine || 0} · مغازه: {whMap.shop_storage || 0} · مرکزی:{' '}
+                            {whMap.central_external || 0} · امانی: {whMap.consignment || 0})
+                          </span>
+                        </td>
+                        <td className="py-2 px-3 font-mono text-slate-500 whitespace-nowrap">
                           {item.expiryDate || '—'}
                         </td>
-                        <td className="py-2.5 px-3 font-mono tabular-nums text-left font-bold text-slate-800 dark:text-slate-200 whitespace-nowrap">
+                        <td className="py-2 px-3 font-mono tabular-nums text-left font-bold whitespace-nowrap">
                           {revealCostPrice && !privacyMasked
-                            ? `${formatCurrency(item.valuationRate)} تومان`
+                            ? `${formatCurrency(item.valuationRate)} ت`
                             : '****'}
                         </td>
-                        <td className="py-2.5 px-3 font-mono tabular-nums text-center text-emerald-700 dark:text-emerald-400 font-semibold">
+                        <td className="py-2 px-3 font-mono tabular-nums text-center text-emerald-700 font-semibold">
                           {inQty}
                         </td>
-                        <td className="py-2.5 px-3 font-mono tabular-nums text-center text-rose-600 dark:text-rose-400 font-semibold">
+                        <td className="py-2 px-3 font-mono tabular-nums text-center text-rose-600 font-semibold">
                           {outQty}
                         </td>
                       </tr>
@@ -754,16 +709,18 @@ export const InventoryWmsModule: React.FC<InventoryWmsModuleProps> = ({
         </div>
       )}
 
-      {/* TAB 2: STAGE-2 SKU ALLOCATION & RAPID BARCODE ENTRY (کلید Enter در فیلد SKU به ردیف بعدی می‌پرد) */}
+      {/* =====================================================================
+          TAB 2: STAGE-2 SKU ACCEPTANCE & LABELING (Polaris IndexTable + Row-Level Collapsible for 11 Specs)
+         ===================================================================== */}
       {activeTab === 'sku_allocation' && (
-        <div className="bg-white dark:bg-slate-900 p-6 rounded-xl border border-slate-200 dark:border-slate-800 space-y-5">
-          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
-            <div className="space-y-1">
-              <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">
-                فرم ورود جزئیات کالا و تخصیص کد SKU (مرحله دوم پس از فاکتور خرید)
+        <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-4">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                جدول فشرده «پذیرش و برچسب‌گذاری SKU» (۱۱ فیلد مشخصات فنی به صورت پیش‌فرض بسته و بازشونده با دکمه +)
               </h3>
-              <p className="text-xs text-slate-500">
-                رفتار ویژه بارکدخوان: با اسکن بارکد در ستون «کد SKU» (که خودکار کلید Enter را می‌زند)، فوکوس کیبورد مستقیماً به فیلد «کد SKU» ردیف بعدی می‌پرد تا بتوانید ده کالا را پشت سر هم اسکن کنید.
+              <p className="text-xs text-slate-500 mt-0.5">
+                با اسکن بارکد در ستون «کد SKU» (Enter)، فوکوس به ردیف بعدی می‌پرد. برای ثبت ۱۱ فیلد مشخصات فنی هر ردیف، روی دکمه (+) در همان سطر کلیک کنید.
               </p>
             </div>
 
@@ -771,7 +728,7 @@ export const InventoryWmsModule: React.FC<InventoryWmsModuleProps> = ({
               <select
                 value={selectedPurchaseId}
                 onChange={(e) => setSelectedPurchaseId(e.target.value)}
-                className="px-3 py-2 border border-slate-300 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800"
+                className="px-3 py-1.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800"
               >
                 <option value="">ثبت مستقیم SKU بدون عطف به فاکتور خرید</option>
                 {pendingBreakdownPurchases.map((p) => (
@@ -780,702 +737,720 @@ export const InventoryWmsModule: React.FC<InventoryWmsModuleProps> = ({
                   </option>
                 ))}
               </select>
-              <button
-                type="button"
+              <PolarisButton
+                size="slim"
+                icon={<Plus className="w-3.5 h-3.5" />}
                 onClick={() =>
                   setBreakdownRows((prev) => [
                     ...prev,
                     createEmptyBreakdownRow(prev.length),
                   ])
                 }
-                className="px-3 py-2 font-semibold bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 rounded-lg hover:bg-slate-200"
               >
-                + افزودن ردیف اسکن
-              </button>
+                ردیف اسکن جدید
+              </PolarisButton>
             </div>
           </div>
 
-          <div className="space-y-4">
-            {breakdownRows.map((row, rowIdx) => {
-              const isLiquidType =
-                row.itemType.includes('جویس') ||
-                row.itemType.includes('سالت') ||
-                row.parentTag.includes('جویس') ||
-                row.parentTag.includes('سالت');
-              const isHardwarePodType =
-                row.itemType.includes('پاد') ||
-                row.itemType.includes('دستگاه') ||
-                row.itemType.includes('کارتریج') ||
-                row.itemType.includes('کویل');
+          {/* Polaris IndexTable for SKU Breakdown Rows + Row-Level Collapsible */}
+          <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-right border-collapse text-xs">
+                <thead className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700">
+                  <tr>
+                    <th className="py-2 px-2.5 font-semibold w-10">#</th>
+                    <th className="py-2 px-2.5 font-semibold">۱. کد SKU (Enter = بعدی) *</th>
+                    <th className="py-2 px-2.5 font-semibold">۲. نام کامل کالا و طعم *</th>
+                    <th className="py-2 px-2.5 font-semibold w-24">تعداد</th>
+                    <th className="py-2 px-2.5 font-semibold">انبار مقصد</th>
+                    <th className="py-2 px-2.5 font-semibold">قیمت خرید واحد</th>
+                    <th className="py-2 px-2.5 font-semibold">قیمت فروش</th>
+                    <th className="py-2 px-2.5 font-semibold">قیمت همکاری</th>
+                    <th className="py-2 px-2.5 font-semibold text-center">
+                      مشخصات فنی (۱۱ فیلد)
+                    </th>
+                    <th className="py-2 px-2.5 font-semibold text-center">حذف</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {breakdownRows.map((row, rowIdx) => {
+                    const isExpanded = Boolean(expandedSpecRows[row.rowId]);
+                    const isLiquidType =
+                      row.itemType.includes('جویس') ||
+                      row.itemType.includes('سالت') ||
+                      row.parentTag.includes('جویس') ||
+                      row.parentTag.includes('سالت');
+                    const isHardwarePodType =
+                      row.itemType.includes('پاد') ||
+                      row.itemType.includes('دستگاه') ||
+                      row.itemType.includes('کارتریج') ||
+                      row.itemType.includes('کویل');
 
-              return (
-                <div
-                  key={row.rowId}
-                  className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40 space-y-3"
-                >
-                  <div className="flex items-center justify-between text-xs border-b border-slate-200/80 dark:border-slate-700 pb-2">
-                    <span className="font-bold text-indigo-700 dark:text-indigo-400">
-                      ردیف اسکن #{rowIdx + 1}
-                    </span>
-                    <div className="flex items-center gap-3">
-                      <label className="inline-flex items-center gap-1.5 cursor-pointer text-sky-800 dark:text-sky-300 font-semibold">
-                        <input
-                          type="checkbox"
-                          checked={row.allowDecantSale}
-                          disabled={!isLiquidType}
-                          onChange={(e) =>
-                            updateBreakdownRow(rowIdx, 'allowDecantSale', e.target.checked)
-                          }
-                          className="rounded border-slate-300"
-                        />
-                        <Droplets className="w-3.5 h-3.5" />
-                        <span>قابلیت فروش باز (میلی‌لیتری Decant)</span>
-                      </label>
-                      {breakdownRows.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setBreakdownRows((prev) =>
-                              prev.filter((_, idx) => idx !== rowIdx)
-                            )
-                          }
-                          className="text-rose-600 hover:underline"
-                        >
-                          حذف ردیف
-                        </button>
-                      )}
-                    </div>
-                  </div>
+                    return (
+                      <React.Fragment key={row.rowId}>
+                        <tr className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40">
+                          <td className="py-2 px-2.5 font-mono font-bold text-slate-500">
+                            {rowIdx + 1}
+                          </td>
+                          <td className="py-2 px-2.5">
+                            <input
+                              ref={(el) => {
+                                skuInputRefs.current[rowIdx] = el;
+                              }}
+                              type="text"
+                              placeholder="اسکن بارکد SKU..."
+                              value={row.sku}
+                              onChange={(e) => updateBreakdownRow(rowIdx, 'sku', e.target.value)}
+                              onKeyDown={(e) => handleSkuInputKeyDown(e, rowIdx)}
+                              className="w-36 px-2.5 py-1 font-mono font-bold bg-white dark:bg-slate-900 border border-indigo-400 dark:border-indigo-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            />
+                          </td>
+                          <td className="py-2 px-2.5">
+                            <input
+                              type="text"
+                              placeholder="مثلاً سالت نستی انبه یخ"
+                              value={row.name}
+                              onChange={(e) => updateBreakdownRow(rowIdx, 'name', e.target.value)}
+                              className="w-48 px-2.5 py-1 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
+                            />
+                          </td>
+                          <td className="py-2 px-2.5">
+                            <input
+                              type="number"
+                              min={1}
+                              value={row.qty}
+                              onChange={(e) =>
+                                updateBreakdownRow(
+                                  rowIdx,
+                                  'qty',
+                                  Math.max(1, Number(e.target.value) || 1)
+                                )
+                              }
+                              className="w-16 px-2 py-1 font-mono text-center bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg tabular-nums"
+                            />
+                          </td>
+                          <td className="py-2 px-2.5">
+                            <select
+                              value={row.targetWarehouse}
+                              onChange={(e) =>
+                                updateBreakdownRow(rowIdx, 'targetWarehouse', e.target.value)
+                              }
+                              className="px-2 py-1 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
+                            >
+                              {warehouses.map((w) => (
+                                <option key={w.id} value={w.key}>
+                                  {w.name}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="py-2 px-2.5">
+                            <input
+                              type="number"
+                              min={0}
+                              value={row.unitPurchasePrice || ''}
+                              onChange={(e) =>
+                                updateBreakdownRow(
+                                  rowIdx,
+                                  'unitPurchasePrice',
+                                  Math.max(0, Number(e.target.value) || 0)
+                                )
+                              }
+                              placeholder="خرید"
+                              className="w-28 px-2 py-1 font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg tabular-nums"
+                            />
+                          </td>
+                          <td className="py-2 px-2.5">
+                            <input
+                              type="number"
+                              min={0}
+                              value={row.retailPrice || ''}
+                              onChange={(e) =>
+                                updateBreakdownRow(
+                                  rowIdx,
+                                  'retailPrice',
+                                  Math.max(0, Number(e.target.value) || 0)
+                                )
+                              }
+                              placeholder="فروش"
+                              className="w-28 px-2 py-1 font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg tabular-nums"
+                            />
+                          </td>
+                          <td className="py-2 px-2.5">
+                            <input
+                              type="number"
+                              min={0}
+                              value={row.resellerPrice || ''}
+                              onChange={(e) =>
+                                updateBreakdownRow(
+                                  rowIdx,
+                                  'resellerPrice',
+                                  Math.max(0, Number(e.target.value) || 0)
+                                )
+                              }
+                              placeholder="همکار"
+                              className="w-28 px-2 py-1 font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg tabular-nums"
+                            />
+                          </td>
+                          <td className="py-2 px-2.5 text-center">
+                            <PolarisButton
+                              size="slim"
+                              primary={isExpanded}
+                              icon={<Plus className="w-3.5 h-3.5" />}
+                              onClick={() => toggleSpecRow(row.rowId)}
+                            >
+                              {isExpanded ? 'بستن مشخصات' : 'مشخصات فنی'}
+                            </PolarisButton>
+                          </td>
+                          <td className="py-2 px-2.5 text-center">
+                            {breakdownRows.length > 1 && (
+                              <PolarisButton
+                                size="slim"
+                                destructive
+                                outline
+                                icon={<Trash2 className="w-3 h-3" />}
+                                onClick={() =>
+                                  setBreakdownRows((prev) =>
+                                    prev.filter((_, idx) => idx !== rowIdx)
+                                  )
+                                }
+                              >
+                                حذف
+                              </PolarisButton>
+                            )}
+                          </td>
+                        </tr>
 
-                  {/* Row Line 1: SKU (Rapid Enter Jump), Item Name, Parent Tag, Item Type, Condition */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-                    <div>
-                      <label className="block text-xs font-bold text-indigo-700 dark:text-indigo-300 mb-1">
-                        ۱. کد SKU (Enter = پرش به SKU بعدی) *
-                      </label>
-                      <input
-                        ref={(el) => {
-                          skuInputRefs.current[rowIdx] = el;
-                        }}
-                        type="text"
-                        placeholder="اسکن بارکد SKU..."
-                        value={row.sku}
-                        onChange={(e) => updateBreakdownRow(rowIdx, 'sku', e.target.value)}
-                        onKeyDown={(e) => handleSkuInputKeyDown(e, rowIdx)}
-                        className="w-full px-3 py-1.5 text-xs font-mono font-bold bg-white dark:bg-slate-900 border-2 border-indigo-400 dark:border-indigo-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      />
-                    </div>
+                        {/* Row-Level Polaris Collapsible: 11 Supplementary Technical Specs (Closed by default!) */}
+                        {isExpanded && (
+                          <tr className="bg-slate-50/90 dark:bg-slate-800/60">
+                            <td colSpan={10} className="p-3.5 border-b border-slate-200 dark:border-slate-700">
+                              <PolarisCollapsible
+                                id={`sku-spec-collapsible-${row.rowId}`}
+                                open={isExpanded}
+                                className="space-y-3"
+                              >
+                                <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-700 pb-2">
+                                  <span className="font-bold text-indigo-700 dark:text-indigo-400">
+                                    ۱۱ فیلد مشخصات فنی تکمیلی برای ردیف #{rowIdx + 1} ({row.name || 'بدون نام'})
+                                  </span>
+                                  <label className="inline-flex items-center gap-1.5 cursor-pointer text-sky-800 dark:text-sky-300 font-semibold">
+                                    <input
+                                      type="checkbox"
+                                      checked={row.allowDecantSale}
+                                      disabled={!isLiquidType}
+                                      onChange={(e) =>
+                                        updateBreakdownRow(
+                                          rowIdx,
+                                          'allowDecantSale',
+                                          e.target.checked
+                                        )
+                                      }
+                                      className="rounded border-slate-300"
+                                    />
+                                    <Droplets className="w-3.5 h-3.5" />
+                                    <span>۱۱. قابلیت فروش باز میلی‌لیتری (Decant)</span>
+                                  </label>
+                                </div>
 
-                    <div>
-                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                        ۲. نام کامل کالا و طعم *
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="مثلاً سالت نستی انبه یخ"
-                        value={row.name}
-                        onChange={(e) => updateBreakdownRow(rowIdx, 'name', e.target.value)}
-                        className="w-full px-3 py-1.5 text-xs bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
-                      />
-                    </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+                                  <CreatableCombobox
+                                    label="۱. تگ مادر / پیشوند"
+                                    value={row.parentTag}
+                                    onChange={(val) => updateBreakdownRow(rowIdx, 'parentTag', val)}
+                                    options={masterOptions.tags}
+                                    onAddNewOption={(opt) => onAddMasterOption('tags', opt)}
+                                  />
+                                  <CreatableCombobox
+                                    label="۲. نوع کالا (تعیین‌کننده صنف)"
+                                    value={row.itemType}
+                                    onChange={(val) => updateBreakdownRow(rowIdx, 'itemType', val)}
+                                    options={masterOptions.itemTypes}
+                                    onAddNewOption={(opt) => onAddMasterOption('itemTypes', opt)}
+                                  />
+                                  <CreatableCombobox
+                                    label="۳. وضعیت کالا (آکبند / استوک)"
+                                    value={row.condition}
+                                    onChange={(val) => updateBreakdownRow(rowIdx, 'condition', val)}
+                                    options={masterOptions.conditions}
+                                    onAddNewOption={(opt) => onAddMasterOption('conditions', opt)}
+                                  />
+                                  <CreatableCombobox
+                                    label="۴. میزان نیکوتین"
+                                    value={row.nicotine}
+                                    onChange={(val) => updateBreakdownRow(rowIdx, 'nicotine', val)}
+                                    options={masterOptions.nicotines}
+                                    onAddNewOption={(opt) => onAddMasterOption('nicotines', opt)}
+                                  />
+                                  <CreatableCombobox
+                                    label="۵. تعداد پاف (Puff)"
+                                    value={row.puffCount}
+                                    onChange={(val) => updateBreakdownRow(rowIdx, 'puffCount', val)}
+                                    options={masterOptions.puffs}
+                                    onAddNewOption={(opt) => onAddMasterOption('puffs', opt)}
+                                  />
+                                </div>
 
-                    <CreatableCombobox
-                      label="۳. تگ / نام مادر / پیشوند"
-                      value={row.parentTag}
-                      onChange={(val) => updateBreakdownRow(rowIdx, 'parentTag', val)}
-                      options={masterOptions.tags}
-                      onAddNewOption={(opt) => onAddMasterOption('tags', opt)}
-                    />
-
-                    <CreatableCombobox
-                      label="۴. نوع کالا (تعیین‌کننده صنف)"
-                      value={row.itemType}
-                      onChange={(val) => updateBreakdownRow(rowIdx, 'itemType', val)}
-                      options={masterOptions.itemTypes}
-                      onAddNewOption={(opt) => onAddMasterOption('itemTypes', opt)}
-                    />
-
-                    <CreatableCombobox
-                      label="۵. وضعیت کالا (آکبند / استوک)"
-                      value={row.condition}
-                      onChange={(val) => updateBreakdownRow(rowIdx, 'condition', val)}
-                      options={masterOptions.conditions}
-                      onAddNewOption={(opt) => onAddMasterOption('conditions', opt)}
-                    />
-                  </div>
-
-                  {/* Row Line 2: Nicotine, Puff, Color, Resistance Ohm, Conditional Volumes */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
-                    <CreatableCombobox
-                      label="۶. میزان نیکوتین"
-                      value={row.nicotine}
-                      onChange={(val) => updateBreakdownRow(rowIdx, 'nicotine', val)}
-                      options={masterOptions.nicotines}
-                      onAddNewOption={(opt) => onAddMasterOption('nicotines', opt)}
-                    />
-
-                    <CreatableCombobox
-                      label="۷. تعداد پاف (Puff)"
-                      value={row.puffCount}
-                      onChange={(val) => updateBreakdownRow(rowIdx, 'puffCount', val)}
-                      options={masterOptions.puffs}
-                      onAddNewOption={(opt) => onAddMasterOption('puffs', opt)}
-                    />
-
-                    <CreatableCombobox
-                      label="۸. رنگ"
-                      value={row.color}
-                      onChange={(val) => updateBreakdownRow(rowIdx, 'color', val)}
-                      options={masterOptions.colors}
-                      onAddNewOption={(opt) => onAddMasterOption('colors', opt)}
-                    />
-
-                    <CreatableCombobox
-                      label="۹. مقاومت / اهم (Ω)"
-                      value={row.resistanceOhm}
-                      onChange={(val) => updateBreakdownRow(rowIdx, 'resistanceOhm', val)}
-                      options={masterOptions.resistances}
-                      onAddNewOption={(opt) => onAddMasterOption('resistances', opt)}
-                    />
-
-                    {/* Conditional Volume Field 1: Liquid/Bottle Volume (ml) — Disabled for Hardware */}
-                    <CreatableCombobox
-                      label="۱۰. حجم مایع / بطری (ml)"
-                      value={row.liquidVolumeMl}
-                      disabled={!isLiquidType && isHardwarePodType}
-                      onChange={(val) => updateBreakdownRow(rowIdx, 'liquidVolumeMl', val)}
-                      options={masterOptions.liquidVolumes}
-                      onAddNewOption={(opt) => onAddMasterOption('liquidVolumes', opt)}
-                      placeholder={
-                        !isLiquidType && isHardwarePodType
-                          ? 'غیرفعال برای دستگاه'
-                          : 'مثلاً 30 ml یا 60 ml'
-                      }
-                    />
-
-                    {/* Conditional Volume Field 2: Pod/Tank Capacity (ml) — Disabled for E-Liquids */}
-                    <CreatableCombobox
-                      label="۱۱. ظرفیت تانک / کارتریج (ml)"
-                      value={row.podTankCapacityMl}
-                      disabled={isLiquidType}
-                      onChange={(val) => updateBreakdownRow(rowIdx, 'podTankCapacityMl', val)}
-                      options={masterOptions.podCapacities}
-                      onAddNewOption={(opt) => onAddMasterOption('podCapacities', opt)}
-                      placeholder={
-                        isLiquidType ? 'غیرفعال برای جویس/سالت' : 'مثلاً 2 ml یا 4.5 ml'
-                      }
-                    />
-                  </div>
-
-                  {/* Row Line 3: Qty, Target Warehouse, Expiry Date, Buying Price, Retail & Reseller Price */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-xs">
-                    <div>
-                      <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                        ۱۲. تعداد واحد
-                      </label>
-                      <input
-                        type="number"
-                        min={1}
-                        value={row.qty}
-                        onChange={(e) =>
-                          updateBreakdownRow(rowIdx, 'qty', Math.max(1, Number(e.target.value) || 1))
-                        }
-                        className="w-full px-3 py-1.5 font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                        ۱۳. انبار مقصد چیدمان
-                      </label>
-                      <select
-                        value={row.targetWarehouse}
-                        onChange={(e) =>
-                          updateBreakdownRow(rowIdx, 'targetWarehouse', e.target.value)
-                        }
-                        className="w-full px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
-                      >
-                        {warehouses.map((w) => (
-                          <option key={w.id} value={w.key}>
-                            {w.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                        ۱۴. تاریخ انقضا
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="۱۴۰۵/۰۶/۳۰"
-                        value={row.expiryDate}
-                        onChange={(e) => updateBreakdownRow(rowIdx, 'expiryDate', e.target.value)}
-                        className="w-full px-3 py-1.5 font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                        ۱۵. قیمت خرید واحد (تومان)
-                      </label>
-                      <input
-                        type="number"
-                        min={0}
-                        value={row.unitPurchasePrice || ''}
-                        onChange={(e) =>
-                          updateBreakdownRow(
-                            rowIdx,
-                            'unitPurchasePrice',
-                            Math.max(0, Number(e.target.value) || 0)
-                          )
-                        }
-                        className="w-full px-3 py-1.5 font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                        ۱۶. قیمت فروش سیستمی (تومان)
-                      </label>
-                      <input
-                        type="number"
-                        min={0}
-                        value={row.retailPrice || ''}
-                        onChange={(e) =>
-                          updateBreakdownRow(
-                            rowIdx,
-                            'retailPrice',
-                            Math.max(0, Number(e.target.value) || 0)
-                          )
-                        }
-                        className="w-full px-3 py-1.5 font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                        ۱۷. قیمت ریسلر / همکار (تومان)
-                      </label>
-                      <input
-                        type="number"
-                        min={0}
-                        value={row.resellerPrice || ''}
-                        onChange={(e) =>
-                          updateBreakdownRow(
-                            rowIdx,
-                            'resellerPrice',
-                            Math.max(0, Number(e.target.value) || 0)
-                          )
-                        }
-                        className="w-full px-3 py-1.5 font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
-                      />
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+                                  <CreatableCombobox
+                                    label="۶. رنگ"
+                                    value={row.color}
+                                    onChange={(val) => updateBreakdownRow(rowIdx, 'color', val)}
+                                    options={masterOptions.colors}
+                                    onAddNewOption={(opt) => onAddMasterOption('colors', opt)}
+                                  />
+                                  <CreatableCombobox
+                                    label="۷. مقاومت / اهم (Ω)"
+                                    value={row.resistanceOhm}
+                                    onChange={(val) =>
+                                      updateBreakdownRow(rowIdx, 'resistanceOhm', val)
+                                    }
+                                    options={masterOptions.resistances}
+                                    onAddNewOption={(opt) => onAddMasterOption('resistances', opt)}
+                                  />
+                                  <CreatableCombobox
+                                    label="۸. حجم مایع / بطری (ml)"
+                                    value={row.liquidVolumeMl}
+                                    disabled={!isLiquidType && isHardwarePodType}
+                                    onChange={(val) =>
+                                      updateBreakdownRow(rowIdx, 'liquidVolumeMl', val)
+                                    }
+                                    options={masterOptions.liquidVolumes}
+                                    onAddNewOption={(opt) =>
+                                      onAddMasterOption('liquidVolumes', opt)
+                                    }
+                                  />
+                                  <CreatableCombobox
+                                    label="۹. ظرفیت تانک / کارتریج (ml)"
+                                    value={row.podTankCapacityMl}
+                                    disabled={isLiquidType}
+                                    onChange={(val) =>
+                                      updateBreakdownRow(rowIdx, 'podTankCapacityMl', val)
+                                    }
+                                    options={masterOptions.podCapacities}
+                                    onAddNewOption={(opt) =>
+                                      onAddMasterOption('podCapacities', opt)
+                                    }
+                                  />
+                                  <div>
+                                    <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                                      ۱۰. تاریخ انقضا
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={row.expiryDate}
+                                      onChange={(e) =>
+                                        updateBreakdownRow(rowIdx, 'expiryDate', e.target.value)
+                                      }
+                                      className="w-full px-3 py-1.5 font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
+                                    />
+                                  </div>
+                                </div>
+                              </PolarisCollapsible>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
 
-          <div className="flex justify-end pt-2">
-            <button
-              type="button"
-              onClick={handleSaveBreakdownRows}
-              className="px-6 py-2.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-xs"
+          <div className="flex justify-end">
+            <PolarisButton
+              primary
+              size="large"
+              loading={isSubmittingBreakdown}
+              disabled={isSubmittingBreakdown}
+              icon={<CheckCircle2 className="w-4 h-4" />}
+              onClick={handleCommitSkuBreakdown}
             >
-              ثبت نهایی جزئیات SKUها و انتقال به موجودی انبار انتخاب‌شده
-            </button>
+              ثبت نهایی برچسب‌گذاری SKU و انتقال به موجودی انبار
+            </PolarisButton>
           </div>
         </div>
       )}
 
-      {/* TAB 3: INDEPENDENT FESTIVAL & DISCOUNTS PANEL + PRODUCT BUNDLES */}
+      {/* =====================================================================
+          TAB 3: FESTIVALS & BUNDLES (Polaris IndexTable + Sheet/Collapsible)
+         ===================================================================== */}
       {activeTab === 'festivals_bundles' && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Festival & Discount Rules Panel (7 cols) */}
-          <div className="lg:col-span-7 bg-white dark:bg-slate-900 p-6 rounded-xl border border-slate-200 dark:border-slate-800 space-y-5">
-            <div>
-              <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">
-                پنل مستقل مدیریت جشنواره و تخفیف‌ها (متصل به دکمه «فروش جشنواره» در صندوق)
-              </h3>
-              <p className="text-xs text-slate-500 mt-0.5">
-                تعریف دستی قوانین تخفیف خرید اول، خرید بالای X قلم و جشنواره‌های مناسبتی همراه با نشانگر وضعیت فعال
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs bg-slate-50 dark:bg-slate-800/60 p-4 rounded-xl border border-slate-200 dark:border-slate-700">
+        <div className="space-y-4">
+          <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  عنوان جشنواره *
-                </label>
-                <input
-                  type="text"
-                  placeholder="مثلاً جشنواره بلک‌فرایدی ویپ"
-                  value={promoName}
-                  onChange={(e) => setPromoName(e.target.value)}
-                  className="w-full px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
-                />
-              </div>
-              <div>
-                <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  نوع جشنواره
-                </label>
-                <select
-                  value={promoType}
-                  onChange={(e) =>
-                    setPromoType(e.target.value as PromotionRuleRecord['festivalType'])
-                  }
-                  className="w-full px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
-                >
-                  <option value="تخفیف خرید اول">تخفیف خرید اول</option>
-                  <option value="خرید بالای X قلم">خرید بالای X قلم (مثلاً ۳ قلم)</option>
-                  <option value="تخفیف مناسبتی">تخفیف مناسبتی</option>
-                  <option value="حراج رسوب انبار">حراج رسوب انبار</option>
-                </select>
-              </div>
-              <div>
-                <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  مشتریان هدف
-                </label>
-                <select
-                  value={promoTarget}
-                  onChange={(e) =>
-                    setPromoTarget(e.target.value as PromotionRuleRecord['targetGroup'])
-                  }
-                  className="w-full px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
-                >
-                  <option value="همه مشتریان">همه مشتریان</option>
-                  <option value="مشتریان عادی">فقط مشتریان عادی</option>
-                  <option value="ریسلرها (همکاران)">فقط ریسلرها (همکاران)</option>
-                </select>
-              </div>
-              <div>
-                <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  نوع و مقدار تخفیف
-                </label>
-                <div className="flex gap-1">
-                  <select
-                    value={promoDiscType}
-                    onChange={(e) => setPromoDiscType(e.target.value as 'percent' | 'fixed')}
-                    className="px-2 py-1.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
-                  >
-                    <option value="percent">درصدی (٪)</option>
-                    <option value="fixed">مبلغ ثابت (ت)</option>
-                  </select>
-                  <input
-                    type="number"
-                    min={1}
-                    value={promoDiscVal}
-                    onChange={(e) => setPromoDiscVal(Math.max(1, Number(e.target.value) || 0))}
-                    className="w-full px-2.5 py-1.5 font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  حداقل تعداد اقلام سبد
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  value={promoMinQty}
-                  onChange={(e) => setPromoMinQty(Math.max(1, Number(e.target.value) || 1))}
-                  className="w-full px-3 py-1.5 font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
-                />
-              </div>
-              <div>
-                <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  مدل خرید مجاز
-                </label>
-                <select
-                  value={promoPayModel}
-                  onChange={(e) => setPromoPayModel(e.target.value as 'نقد' | 'نسیه' | 'همه')}
-                  className="w-full px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
-                >
-                  <option value="همه">نقد و نسیه (همه)</option>
-                  <option value="نقد">فقط خرید نقدی</option>
-                  <option value="نسیه">فقط خرید نسیه</option>
-                </select>
-              </div>
-              <div>
-                <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  از تاریخ
-                </label>
-                <input
-                  type="text"
-                  value={promoStart}
-                  onChange={(e) => setPromoStart(e.target.value)}
-                  className="w-full px-3 py-1.5 font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
-                />
-              </div>
-              <div>
-                <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  تا تاریخ
-                </label>
-                <input
-                  type="text"
-                  value={promoEnd}
-                  onChange={(e) => setPromoEnd(e.target.value)}
-                  className="w-full px-3 py-1.5 font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
-                />
-              </div>
-              <div className="flex items-end">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!promoName.trim()) {
-                      onShowToast('عنوان قانون جشنواره را وارد کنید.');
-                      return;
-                    }
-                    onAddPromotionRule({
-                      id: `promo-${Date.now()}`,
-                      name: promoName.trim(),
-                      festivalType: promoType,
-                      discountType: promoDiscType,
-                      discountValue: promoDiscVal,
-                      minQty: promoMinQty,
-                      targetGroup: promoTarget,
-                      startDate: promoStart,
-                      endDate: promoEnd,
-                      applicableSkus: [],
-                      paymentModel: promoPayModel,
-                      isActive: true,
-                    });
-                    setPromoName('');
-                    onShowToast('قانون جدید جشنواره ثبت و در صندوق فروشگاهی فعال شد.');
-                  }}
-                  className="w-full py-1.5 px-3 font-bold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
-                >
-                  + ثبت قانون جشنواره
-                </button>
-              </div>
-            </div>
-
-            <div className="space-y-2.5">
-              {promotionRules.map((rule) => (
-                <div
-                  key={rule.id}
-                  className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
-                >
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-bold text-slate-900 dark:text-slate-100">
-                        {rule.name}
-                      </span>
-                      <span
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold ${
-                          rule.isActive
-                            ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300'
-                            : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
-                        }`}
-                      >
-                        <CheckCircle2 className="w-3 h-3" />
-                        <span>{rule.isActive ? 'فعال در صندوق (Active)' : 'غیرفعال'}</span>
-                      </span>
-                    </div>
-                    <div className="text-slate-500">
-                      نوع: {rule.festivalType} · تخفیف:{' '}
-                      {rule.discountType === 'percent'
-                        ? `${rule.discountValue}٪`
-                        : `${formatCurrency(rule.discountValue)} تومان`}{' '}
-                      · حداقل خرید: {rule.minQty} قلم · مخاطب: {rule.targetGroup} · بازه:{' '}
-                      {rule.startDate} تا {rule.endDate}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => onTogglePromotionRule(rule.id)}
-                    className="px-3 py-1.5 font-semibold rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
-                  >
-                    {rule.isActive ? 'غیرفعال کردن' : 'فعال‌سازی مجدد'}
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Product Bundle Builder (5 cols) */}
-          <div className="lg:col-span-5 bg-white dark:bg-slate-900 p-6 rounded-xl border border-slate-200 dark:border-slate-800 space-y-4">
-            <div className="flex items-center gap-2">
-              <Boxes className="w-5 h-5 text-indigo-600" />
-              <div>
-                <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">
-                  تعریف پکیج باندل کالا (Product Bundle)
+                <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                  جدول قوانین جشنواره و تخفیف‌های هوشمند ({promotionRules.length} قانون)
                 </h3>
                 <p className="text-xs text-slate-500">
-                  پکیج مجازی متشکل از دو یا چند کالای واقعی با کسر همزمان موجودی هر دو از انبار در لحظه فروش
+                  برای تعریف جشنواره یا ساخت باندل جدید از دکمه‌های (+) استفاده کنید.
                 </p>
               </div>
+              <PolarisButtonGroup>
+                <PolarisButton
+                  size="slim"
+                  icon={<Boxes className="w-3.5 h-3.5" />}
+                  onClick={() => setIsBundleCollapsibleOpen((prev) => !prev)}
+                >
+                  {isBundleCollapsibleOpen ? 'بستن باندل‌ساز' : '+ ساخت باندل کالا'}
+                </PolarisButton>
+                <PolarisButton
+                  size="slim"
+                  primary
+                  icon={<Plus className="w-3.5 h-3.5" />}
+                  onClick={() => setIsPromoSheetOpen(true)}
+                >
+                  جشنواره جدید
+                </PolarisButton>
+              </PolarisButtonGroup>
             </div>
 
-            <div className="space-y-3 text-xs">
-              <div className="grid grid-cols-2 gap-2.5">
+            {/* Polaris Collapsible: Bundle Builder (Closed by default) */}
+            <PolarisCollapsible
+              id="wms-bundle-collapsible"
+              open={isBundleCollapsibleOpen}
+              className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700"
+            >
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!bundleSku.trim() || !bundleName.trim() || bundlePrice <= 0) {
+                    onShowToast('کد SKU، نام باندل و قیمت فروش پکیج الزامی است.');
+                    return;
+                  }
+                  if (!bundleComp1Sku || !bundleComp2Sku) {
+                    onShowToast('حداقل دو کالای تشکیل‌دهنده باندل را انتخاب کنید.');
+                    return;
+                  }
+                  setIsSubmittingBundle(true);
+                  const comp1 = items.find((i) => i.sku === bundleComp1Sku);
+                  const comp2 = items.find((i) => i.sku === bundleComp2Sku);
+                  const totalCost =
+                    (comp1?.valuationRate || 0) * bundleComp1Qty +
+                    (comp2?.valuationRate || 0) * bundleComp2Qty;
+
+                  const newBundle: InventoryItemRecord = {
+                    id: `bnd-${Date.now()}`,
+                    sku: bundleSku.trim().toUpperCase(),
+                    name: bundleName.trim(),
+                    category: 'پکیج باندل',
+                    brand: 'کلودی شاپ',
+                    sector: 'vape',
+                    condition: 'آکبند',
+                    uomPrimary: 'عدد',
+                    stockQty: Math.min(comp1?.stockQty || 5, comp2?.stockQty || 5),
+                    reservedQty: 0,
+                    reorderLevel: 2,
+                    warehouseStock: {
+                      vitrine: Math.min(comp1?.stockQty || 5, comp2?.stockQty || 5),
+                    },
+                    valuationRate: totalCost,
+                    retailPrice: bundlePrice,
+                    wholesalePrice: Math.round(bundlePrice * 0.9),
+                    partnerPrice: Math.round(bundlePrice * 0.9),
+                    serialNumbers: [],
+                    batchNo: 'BND-1404',
+                    expiryDate: '—',
+                    isBundle: true,
+                    bundleComponents: [bundleComp1Sku, bundleComp2Sku],
+                    bundleComponentItems: [
+                      {
+                        sku: bundleComp1Sku,
+                        name: comp1?.name || bundleComp1Sku,
+                        qty: bundleComp1Qty,
+                      },
+                      {
+                        sku: bundleComp2Sku,
+                        name: comp2?.name || bundleComp2Sku,
+                        qty: bundleComp2Qty,
+                      },
+                    ],
+                  };
+                  window.setTimeout(() => {
+                    onCreateBundleItem(newBundle);
+                    setIsSubmittingBundle(false);
+                    setIsBundleCollapsibleOpen(false);
+                    setBundleSku('');
+                    setBundleName('');
+                    setBundlePrice(0);
+                  }, 120);
+                }}
+                className="grid grid-cols-1 md:grid-cols-6 gap-3 items-end text-xs"
+              >
                 <div>
-                  <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                    کد SKU باندل *
-                  </label>
+                  <label className="block font-medium mb-1">کد SKU باندل *</label>
                   <input
                     type="text"
-                    placeholder="مثلاً BND-VAPE-KIT1"
                     value={bundleSku}
                     onChange={(e) => setBundleSku(e.target.value)}
-                    className="w-full px-3 py-1.5 font-mono border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"
+                    placeholder="BUNDLE-STARTER-01"
+                    className="w-full px-2.5 py-1.5 font-mono bg-white dark:bg-slate-900 border border-slate-300 rounded-lg"
                   />
                 </div>
                 <div>
-                  <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                    قیمت فروش پکیج باندل (تومان) *
-                  </label>
+                  <label className="block font-medium mb-1">نام پکیج باندل *</label>
+                  <input
+                    type="text"
+                    value={bundleName}
+                    onChange={(e) => setBundleName(e.target.value)}
+                    placeholder="پکیج پاد + سالت"
+                    className="w-full px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-300 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium mb-1">قیمت فروش باندل *</label>
                   <input
                     type="number"
                     min={0}
-                    placeholder="مثلاً 2450000"
                     value={bundlePrice || ''}
-                    onChange={(e) => setBundlePrice(Math.max(0, Number(e.target.value) || 0))}
-                    className="w-full px-3 py-1.5 font-mono border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"
+                    onChange={(e) => setBundlePrice(Number(e.target.value))}
+                    className="w-full px-2.5 py-1.5 font-mono bg-white dark:bg-slate-900 border border-slate-300 rounded-lg"
                   />
                 </div>
-              </div>
-
-              <div>
-                <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  نام پکیج باندل *
-                </label>
-                <input
-                  type="text"
-                  placeholder="مثلاً پک استارتر پاد کالیبرن + سالت ۳۰ میل + کارتریج اضافه"
-                  value={bundleName}
-                  onChange={(e) => setBundleName(e.target.value)}
-                  className="w-full px-3 py-1.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"
-                />
-              </div>
-
-              <div className="grid grid-cols-12 gap-2 items-end">
-                <div className="col-span-9">
-                  <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                    کالای زیرمجموعه اول *
-                  </label>
+                <div>
+                  <label className="block font-medium mb-1">کالای اول باندل</label>
                   <select
                     value={bundleComp1Sku}
                     onChange={(e) => setBundleComp1Sku(e.target.value)}
-                    className="w-full px-2.5 py-1.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"
+                    className="w-full px-2 py-1.5 bg-white dark:bg-slate-900 border border-slate-300 rounded-lg"
                   >
-                    <option value="">انتخاب کالای اول...</option>
-                    {items
-                      .filter((i) => !i.isBundle)
-                      .slice(0, 80)
-                      .map((i) => (
-                        <option key={i.id} value={i.sku}>
-                          {i.name} ({i.sku})
-                        </option>
-                      ))}
+                    <option value="">انتخاب کالای ۱...</option>
+                    {items.map((i) => (
+                      <option key={i.sku} value={i.sku}>
+                        {i.name}
+                      </option>
+                    ))}
                   </select>
                 </div>
-                <div className="col-span-3">
-                  <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                    تعداد
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    value={bundleComp1Qty}
-                    onChange={(e) => setBundleComp1Qty(Math.max(1, Number(e.target.value) || 1))}
-                    className="w-full px-2.5 py-1.5 font-mono border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-12 gap-2 items-end">
-                <div className="col-span-9">
-                  <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                    کالای زیرمجموعه دوم *
-                  </label>
+                <div>
+                  <label className="block font-medium mb-1">کالای دوم باندل</label>
                   <select
                     value={bundleComp2Sku}
                     onChange={(e) => setBundleComp2Sku(e.target.value)}
-                    className="w-full px-2.5 py-1.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"
+                    className="w-full px-2 py-1.5 bg-white dark:bg-slate-900 border border-slate-300 rounded-lg"
                   >
-                    <option value="">انتخاب کالای دوم...</option>
-                    {items
-                      .filter((i) => !i.isBundle)
-                      .slice(0, 80)
-                      .map((i) => (
-                        <option key={i.id} value={i.sku}>
-                          {i.name} ({i.sku})
-                        </option>
-                      ))}
+                    <option value="">انتخاب کالای ۲...</option>
+                    {items.map((i) => (
+                      <option key={i.sku} value={i.sku}>
+                        {i.name}
+                      </option>
+                    ))}
                   </select>
                 </div>
-                <div className="col-span-3">
-                  <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                    تعداد
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    value={bundleComp2Qty}
-                    onChange={(e) => setBundleComp2Qty(Math.max(1, Number(e.target.value) || 1))}
-                    className="w-full px-2.5 py-1.5 font-mono border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"
-                  />
+                <div>
+                  <PolarisButton
+                    type="submit"
+                    primary
+                    fullWidth
+                    size="slim"
+                    loading={isSubmittingBundle}
+                    disabled={isSubmittingBundle}
+                  >
+                    ثبت پکیج باندل
+                  </PolarisButton>
                 </div>
-              </div>
+              </form>
+            </PolarisCollapsible>
 
-              <button
-                type="button"
-                onClick={() => {
-                  const c1 = items.find((i) => i.sku === bundleComp1Sku);
-                  const c2 = items.find((i) => i.sku === bundleComp2Sku);
-                  if (!bundleSku.trim() || !bundleName.trim() || !c1 || !c2 || bundlePrice <= 0) {
-                    onShowToast('لطفاً کد، نام، قیمت و هر دو کالای زیرمجموعه باندل را کامل انتخاب کنید.');
-                    return;
-                  }
-                  const combinedCost =
-                    c1.valuationRate * bundleComp1Qty + c2.valuationRate * bundleComp2Qty;
-                  const possibleQty = Math.min(
-                    Math.floor(c1.stockQty / bundleComp1Qty),
-                    Math.floor(c2.stockQty / bundleComp2Qty)
-                  );
-                  onCreateBundleItem({
-                    id: `bnd-${Date.now()}`,
-                    sku: bundleSku.trim(),
-                    name: bundleName.trim(),
-                    category: 'پکیج باندل',
-                    sector: 'vape',
-                    brand: 'پکیج ترکیبی',
-                    isBundle: true,
-                    bundleComponents: [
-                      `${bundleComp1Qty}× ${c1.name}`,
-                      `${bundleComp2Qty}× ${c2.name}`,
-                    ],
-                    bundleComponentItems: [
-                      { sku: c1.sku, name: c1.name, qty: bundleComp1Qty },
-                      { sku: c2.sku, name: c2.name, qty: bundleComp2Qty },
-                    ],
-                    uomPrimary: 'پکیج',
-                    stockQty: Math.max(1, possibleQty),
-                    reservedQty: 0,
-                    reorderLevel: 1,
-                    valuationRate: combinedCost,
-                    retailPrice: bundlePrice,
-                    wholesalePrice: bundlePrice,
-                    partnerPrice: bundlePrice,
-                    serialNumbers: [],
-                    batchNo: 'BUNDLE',
-                    expiryDate: '—',
-                  });
-                  setBundleSku('');
-                  setBundleName('');
-                  setBundlePrice(0);
-                }}
-                className="w-full py-2.5 px-4 font-bold bg-slate-900 dark:bg-indigo-600 text-white rounded-xl hover:bg-slate-800"
-              >
-                + ایجاد پکیج باندل و افزودن به صندوق فروشگاهی
-              </button>
+            {/* Promotion Rules Polaris IndexTable */}
+            <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
+              <table className="w-full text-right border-collapse text-xs">
+                <thead className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700">
+                  <tr>
+                    <th className="py-2 px-3">نام جشنواره</th>
+                    <th className="py-2 px-3">نوع جشنواره</th>
+                    <th className="py-2 px-3">مقدار تخفیف</th>
+                    <th className="py-2 px-3">جامعه هدف</th>
+                    <th className="py-2 px-3">بازه زمانی</th>
+                    <th className="py-2 px-3 text-center">وضعیت</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {promotionRules.map((rule) => (
+                    <tr key={rule.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                      <td className="py-2 px-3 font-bold text-slate-900 dark:text-slate-100">
+                        {rule.name}
+                      </td>
+                      <td className="py-2 px-3">{rule.festivalType}</td>
+                      <td className="py-2 px-3 font-mono font-bold tabular-nums">
+                        {rule.discountType === 'percent'
+                          ? `${rule.discountValue}%`
+                          : `${formatCurrency(rule.discountValue)} ت`}
+                      </td>
+                      <td className="py-2 px-3">{rule.targetGroup}</td>
+                      <td className="py-2 px-3 font-mono tabular-nums text-slate-500">
+                        {rule.startDate} تا {rule.endDate}
+                      </td>
+                      <td className="py-2 px-3 text-center">
+                        <PolarisButton
+                          size="slim"
+                          primary={rule.isActive}
+                          onClick={() => onTogglePromotionRule(rule.id)}
+                        >
+                          {rule.isActive ? 'فعال در صندوق' : 'غیرفعال'}
+                        </PolarisButton>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
       )}
+
+      {/* =====================================================================
+          POLARIS SHEET: ADD NEW WAREHOUSE (Closed by default, opens via +)
+         ===================================================================== */}
+      <PolarisSheet
+        open={isWarehouseSheetOpen}
+        onClose={() => setIsWarehouseSheetOpen(false)}
+        title="افزودن انبار جدید به سیستم"
+        footer={
+          <>
+            <PolarisButton onClick={() => setIsWarehouseSheetOpen(false)}>انصراف</PolarisButton>
+            <PolarisButton
+              primary
+              loading={isSavingWarehouse}
+              disabled={isSavingWarehouse}
+              onClick={handleAddWarehouseSubmit}
+            >
+              ذخیره انبار جدید
+            </PolarisButton>
+          </>
+        }
+      >
+        <div className="space-y-3.5">
+          <div>
+            <label className="block font-semibold mb-1">نام انبار جدید *</label>
+            <input
+              type="text"
+              autoFocus
+              value={newWhName}
+              onChange={(e) => setNewWhName(e.target.value)}
+              placeholder="مثلاً انبار قرنطینه و مرجوعی..."
+              className="w-full px-3 py-2 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900"
+            />
+          </div>
+          <div>
+            <label className="block font-semibold mb-1">موقعیت فیزیکی</label>
+            <input
+              type="text"
+              value={newWhLocation}
+              onChange={(e) => setNewWhLocation(e.target.value)}
+              placeholder="فروشگاه مرکزی کلودی شاپ"
+              className="w-full px-3 py-2 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900"
+            />
+          </div>
+          <div>
+            <label className="block font-semibold mb-1">توضیح و کاربری انبار</label>
+            <input
+              type="text"
+              value={newWhDesc}
+              onChange={(e) => setNewWhDesc(e.target.value)}
+              placeholder="توضیحات..."
+              className="w-full px-3 py-2 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900"
+            />
+          </div>
+        </div>
+      </PolarisSheet>
+
+      {/* =====================================================================
+          POLARIS SHEET: ADD NEW PROMOTION RULE (Closed by default, opens via +)
+         ===================================================================== */}
+      <PolarisSheet
+        open={isPromoSheetOpen}
+        onClose={() => setIsPromoSheetOpen(false)}
+        title="تعریف قانون جشنواره و تخفیف جدید"
+        footer={
+          <>
+            <PolarisButton onClick={() => setIsPromoSheetOpen(false)}>انصراف</PolarisButton>
+            <PolarisButton
+              primary
+              loading={isSubmittingPromo}
+              disabled={isSubmittingPromo}
+              onClick={() => {
+                if (!promoName.trim() || isSubmittingPromo) return;
+                setIsSubmittingPromo(true);
+                window.setTimeout(() => {
+                  onAddPromotionRule({
+                    id: `promo-${Date.now()}`,
+                    name: promoName.trim(),
+                    festivalType: promoType,
+                    discountType: promoDiscType,
+                    discountValue: Math.max(0, Number(promoDiscVal) || 0),
+                    minQty: Math.max(1, Number(promoMinQty) || 1),
+                    targetGroup: promoTarget,
+                    startDate: promoStart,
+                    endDate: promoEnd,
+                    paymentModel: promoPayModel,
+                    applicableSkus: [],
+                    isActive: true,
+                  });
+                  setPromoName('');
+                  setIsSubmittingPromo(false);
+                  setIsPromoSheetOpen(false);
+                }, 120);
+              }}
+            >
+              ذخیره و فعال‌سازی جشنواره
+            </PolarisButton>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <div>
+            <label className="block font-semibold mb-1">عنوان جشنواره *</label>
+            <input
+              type="text"
+              value={promoName}
+              onChange={(e) => setPromoName(e.target.value)}
+              placeholder="مثلاً جشنواره یلدا کلودی شاپ"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white dark:bg-slate-900"
+            />
+          </div>
+          <div>
+            <label className="block font-semibold mb-1">نوع جشنواره</label>
+            <select
+              value={promoType}
+              onChange={(e) =>
+                setPromoType(e.target.value as PromotionRuleRecord['festivalType'])
+              }
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white dark:bg-slate-900"
+            >
+              <option value="خرید بالای X قلم">خرید بالای X قلم</option>
+              <option value="تخفیف خرید اول">تخفیف خرید اول</option>
+              <option value="تخفیف مناسبتی">تخفیف مناسبتی</option>
+              <option value="حراج رسوب انبار">حراج رسوب انبار</option>
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="block font-semibold mb-1">مدل تخفیف</label>
+              <select
+                value={promoDiscType}
+                onChange={(e) => setPromoDiscType(e.target.value as 'percent' | 'fixed')}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white dark:bg-slate-900"
+              >
+                <option value="percent">درصدی (%)</option>
+                <option value="fixed">مبلغ ثابت (تومان)</option>
+              </select>
+            </div>
+            <div>
+              <label className="block font-semibold mb-1">مقدار تخفیف</label>
+              <input
+                type="number"
+                min={0}
+                value={promoDiscVal}
+                onChange={(e) => setPromoDiscVal(Number(e.target.value))}
+                className="w-full px-3 py-2 font-mono border border-slate-300 rounded-lg bg-white dark:bg-slate-900"
+              />
+            </div>
+          </div>
+        </div>
+      </PolarisSheet>
     </div>
   );
 };
